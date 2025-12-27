@@ -10,7 +10,7 @@ import os
 
 # 1. Setup Environment
 # load_dotenv()
-os.environ["API_KEY"] = "AIzaSyCOoiiC4Tnuhslqj8-WiJ91TEiw88MivDc"
+os.environ["API_KEY"] = ""
 api_key = os.getenv("API_KEY")
 
 # if "GOOGLE_API_KEY" not in os.environ:
