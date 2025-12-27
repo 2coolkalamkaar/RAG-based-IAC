@@ -23,7 +23,7 @@ load_dotenv()
 # Ensure API Key is set (Best practice: use .env file)
 if "GOOGLE_API_KEY" not in os.environ:
     # Fallback if not in .env (Use your actual key here if testing locally)
-    os.environ["GOOGLE_API_KEY"] = os.getenv("API_KEY", "AIzaSyCOoiiC4Tnuhslqj8-WiJ91TEiw88MivDc")
+    os.environ["GOOGLE_API_KEY"] = os.getenv("API_KEY", "")
 
 DB_PATH = "./chroma_db_terraform"
 embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
