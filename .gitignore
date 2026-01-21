@@ -1,0 +1,8 @@
+
+venv/
+.env
+chroma_db_terraform/
+terraform-provider-aws/
+__pycache__/
+*.pyc
+.DS_Store
