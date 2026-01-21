@@ -1,0 +1,17 @@
+
+version: '3.8'
+
+services:
+  rag-app:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    volumes:
+      # Mount the local vector store if you want updates to persist or to avoid rebuilding image on data change
+      - ./chroma_db_terraform:/app/chroma_db_terraform
+      # Mount source code for development (optional, remove for production)
+      - ./RAG.py:/app/RAG.py
+    env_file:
+      - .env
