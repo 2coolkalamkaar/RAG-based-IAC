@@ -3,6 +3,9 @@ import os
 import logging
 import streamlit as st
 import re
+import subprocess
+import tempfile
+import shutil
 from dotenv import load_dotenv
 
 # LangChain Imports
@@ -31,7 +34,7 @@ st.set_page_config(
     page_icon="🧠"
 )
 
-st.title("Terraform Architect Agent 🧠 (Conversation Mode)")
+st.title("Terraform Architect Agent 🧠 (Self-Validating)")
 
 # Check for API key
 if "GOOGLE_API_KEY" not in os.environ:
@@ -95,11 +98,6 @@ def get_conversational_chain(_vector_store):
             ("human", "{input}"),
         ]
     )
-    
-    # We use a simple history aware retriever first to get the right QUERY, 
-    # but we want to use MultiQueryRetriever for the actual RETRIEVAL.
-    # To combine them, we'll manually handle the rephrasing in a Runnable if needed, 
-    # but create_history_aware_retriever expects a base retriever. 
     
     # Base retriever (MultiQuery)
     # Note: MultiQueryRetriever already uses an LLM to generate variations.
@@ -170,22 +168,89 @@ def parse_terraform_code(response_content: str) -> dict:
     # If no files found via regex, just return None so we can display raw text
     return files if files else None
 
-# --- 5. Chat Interface ---
+# --- 5. Terraform Validation Logic ---
+
+def validate_terraform_code(files: dict) -> tuple[bool, str]:
+    """
+    Validates Terraform code by running 'terraform init' and 'terraform plan' 
+    in a temporary directory.
+    Returns: (is_valid, output_log)
+    """
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # 1. Write files to temp dir
+        for filename, content in files.items():
+            file_path = os.path.join(temp_dir, filename)
+            with open(file_path, "w") as f:
+                f.write(content)
+        
+        # 2. Check if terraform is installed
+        if shutil.which("terraform") is None:
+            return False, "Terraform binary not found. Please install Terraform."
+
+        # 3. Run terraform init
+        # We use -backend=false because we don't want to actually configure strict remote backends in a temp validation
+        init_cmd = ["terraform", "init", "-backend=false"]
+        result = subprocess.run(
+            init_cmd, 
+            cwd=temp_dir, 
+            capture_output=True, 
+            text=True
+        )
+        if result.returncode != 0:
+            return False, f"Terraform Init Failed:\n{result.stderr}\n{result.stdout}"
+
+        # 4. Run terraform validate (syntax check)
+        validate_cmd = ["terraform", "validate"]
+        result = subprocess.run(
+            validate_cmd, 
+            cwd=temp_dir, 
+            capture_output=True, 
+            text=True
+        )
+        if result.returncode != 0:
+            return False, f"Terraform Validation Failed:\n{result.stderr}\n{result.stdout}"
+            
+        # 5. Run terraform plan (logical check)
+        # Note: running plan might require AWS credentials if the provider block is configured.
+        # If credentials aren't present, it might fail.
+        # We will try to run output-only plan or ignore errors related to missing creds if possible, 
+        # but 'terraform plan' is what was requested.
+        plan_cmd = ["terraform", "plan", "-refresh=false"] 
+        result = subprocess.run(
+            plan_cmd, 
+            cwd=temp_dir, 
+            capture_output=True, 
+            text=True
+        )
+        
+        # A plan failure often means credentials missing OR syntax/logic errors.
+        # We return the output.
+        if result.returncode != 0:
+             return False, f"Terraform Plan Failed:\n{result.stderr}\n{result.stdout}"
+
+        return True, "Terraform Plan Successful!"
+
+    except Exception as e:
+        return False, str(e)
+    finally:
+        # Cleanup
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# --- 6. Chat Interface ---
 
 # Initialize chat history in session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
-    # Add a welcome message
     st.session_state.messages.append({
         "role": "assistant", 
-        "content": "Hello! I am your Terraform Architect. Describe the infrastructure you want to build, and we can iterate on the design together."
+        "content": "Hello! I am your Self-Validating Terraform Architect. I will verify the code I generate."
     })
 
 # Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        # If the content contains terraform files (we can heuristic check), we could render nicely
-        # For now, rely on markdown rendering
         st.markdown(message["content"])
 
 # React to user input
@@ -193,54 +258,107 @@ if prompt := st.chat_input("E.g., Create a 3-tier VPC architecture"):
     
     # 1. Display user message
     st.chat_message("user").markdown(prompt)
-    
-    # 2. Add user message to history
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    # 3. Generate response
+    # 2. Logic Loop (Generate -> Validate -> Fix)
     with st.chat_message("assistant"):
-        with st.spinner("🧠 Architecting..."):
+        
+        # We need a placeholder to update the status
+        status_container = st.empty()
+        
+        # Max retries for self-correction
+        MAX_RETRIES = 3
+        current_input = prompt
+        
+        # We need to maintain a temporary context of the conversation just for this turn
+        # to include the error feedbacks without polluting the main history with N failed attempts
+        temp_chat_history = []
+        
+        # Copy existing history logic
+        main_chat_history = []
+        for msg in st.session_state.messages[:-1]: 
+            if msg["role"] == "user":
+                main_chat_history.append(HumanMessage(content=msg["content"]))
+            elif msg["role"] == "assistant":
+                main_chat_history.append(AIMessage(content=msg["content"]))
+
+        final_answer = ""
+        
+        for attempt in range(MAX_RETRIES):
+            with status_container:
+                if attempt == 0:
+                    st.info("🧠 Architecting solution...")
+                else:
+                    st.info(f"🔧 Applying fix (Attempt {attempt+1}/{MAX_RETRIES})...")
+
             try:
-                # Convert session state messages to LangChain format for history
-                chat_history = []
-                for msg in st.session_state.messages[:-1]: # Exclude the just added user msg
-                    if msg["role"] == "user":
-                        chat_history.append(HumanMessage(content=msg["content"]))
-                    elif msg["role"] == "assistant":
-                        chat_history.append(AIMessage(content=msg["content"]))
+                # Prepare history for this invoke
+                # It combines main history + any temp history from previous failed attempts in this loop
+                combined_history = main_chat_history + temp_chat_history
                 
-                # Invoke the chain
                 response = chain.invoke({
-                    "chat_history": chat_history,
-                    "input": prompt
+                    "chat_history": combined_history,
+                    "input": current_input
                 })
                 
                 answer = response["answer"]
-                
-                # Check if we have code files to render specially
                 files = parse_terraform_code(answer)
                 
-                if files:
-                    st.success("Generated Configuration:")
-                    tabs = st.tabs(list(files.keys()))
-                    for i, filename in enumerate(files.keys()):
-                        with tabs[i]:
-                            st.code(files[filename], language='hcl', line_numbers=True)
+                if not files:
+                    # No code generated, just text. We assume it's valid conversation.
+                    final_answer = answer
+                    status_container.success("Response Generated!")
+                    break
+                
+                # Check validation
+                with status_container:
+                    st.info("🔎 Validating Terraform Code (Init -> Validate -> Plan)...")
                     
-                    # Also append the raw text explanation to the chat
-                    # We might want to construct a nice markdown response
-                    st.markdown(answer)
+                success, validation_msg = validate_terraform_code(files)
+                
+                if success:
+                    final_answer = answer + f"\n\n✅ **Verification**: Code passed `terraform plan` check."
+                    status_container.success("Code Validated Successfully!")
+                    break
                 else:
-                    st.markdown(answer)
-                
-                # Add assistant response to history
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-                
-                # Show context in an expander (optional, for debugging/transparency)
-                with st.expander("References"):
-                    for i, doc in enumerate(response.get("context", [])):
-                        st.caption(f"Source: {doc.metadata.get('source')}")
-                        st.text(doc.page_content[:200] + "...")
-
+                    # Validation Failed
+                    error_report = f"Validation Errors:\n{validation_msg}"
+                    with st.expander(f"⚠️ Validation Failed (Attempt {attempt+1})", expanded=False):
+                        st.code(validation_msg)
+                        
+                    # Prepare for next iteration using the error feedback
+                    temp_chat_history.append(HumanMessage(content=current_input))
+                    temp_chat_history.append(AIMessage(content=answer))
+                    
+                    # New input for the model
+                    current_input = (
+                        f"The previous Terraform code you generated failed validation.\n"
+                        f"Here is the error output from `terraform plan`:\n"
+                        f"```text\n{validation_msg}\n```\n"
+                        f"Please fix the code based on these errors and output the complete corrected Terraform files."
+                    )
+                    
+                    if attempt == MAX_RETRIES - 1:
+                        final_answer = answer + f"\n\n❌ **Verification**: Code failed validation after {MAX_RETRIES} attempts.\nSee errors in the expander above."
+                        status_container.error("Maximum retries reached. Returning last best attempt.")
+                        
             except Exception as e:
                 st.error(f"Error: {e}")
+                break
+
+        # Display Result
+        files = parse_terraform_code(final_answer)
+        if files:
+            st.success("Configuration Ready:")
+            tabs = st.tabs(list(files.keys()))
+            for i, filename in enumerate(files.keys()):
+                with tabs[i]:
+                    st.code(files[filename], language='hcl', line_numbers=True)
+            
+            # Show the narrative part of the answer
+            st.markdown(final_answer)
+        else:
+            st.markdown(final_answer)
+
+        # Update History
+        st.session_state.messages.append({"role": "assistant", "content": final_answer})
