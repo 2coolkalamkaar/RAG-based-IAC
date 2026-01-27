@@ -4,11 +4,25 @@ FROM python:3.11-slim-bookworm
 WORKDIR /app
 
 # Install system dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     git \
+    unzip \
+    software-properties-common \
+    gnupg \
+    graphviz \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy installation scripts
+COPY install_terraform.sh .
+COPY install_tflint.sh .
+
+# Install Terraform and TFLint
+RUN chmod +x install_terraform.sh install_tflint.sh && \
+    ./install_terraform.sh && \
+    ./install_tflint.sh
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
