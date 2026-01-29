@@ -1,0 +1,16 @@
+
+# Backend
+backend/__pycache__/
+backend/*.py[cod]
+backend/*.db
+backend/.env
+backend/chroma_db_terraform/
+backend/temp_diag.py
+backend/diagram_output.png
+backend/.ipynb_checkpoints/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.DS_Store
