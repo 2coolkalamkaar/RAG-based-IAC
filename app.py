@@ -1,135 +1,162 @@
-import os
-import re
 import streamlit as st
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.schema import HumanMessage, SystemMessage
-from dotenv import load_dotenv
+import time
+import re
+import os
+import sqlite3
+import uuid
 
-# --- 1. Configuration and Setup ---
+# Force LangSmith config
+os.environ["LANGCHAIN_PROJECT"] = "Agent_Workflow_Advanced_RAG"
 
-# Load environment variables from a .env file
-load_dotenv()
+from agent_workflow_advanced_rag import app
 
-# Set Streamlit page configuration for a better layout
-st.set_page_config(
-    layout="wide",
-    page_title="Production-Grade Terraform Generator",
-    page_icon="🚀"
-)
+st.set_page_config(page_title="Terraform RAG Agent", page_icon="🏗️", layout="wide")
 
-# The production-grade system prompt we engineered previously.
-# It's better to define this as a constant at the top of the script.
-SYSTEM_PROMPT = """
-You are a world-class DevOps architect and a Terraform expert with a deep specialization in creating secure, scalable, and highly available AWS infrastructure. Your task is to generate a complete, production-hardened, and reusable Terraform module configuration based on the user's request.
+st.sidebar.title("Chat History")
 
-Follow these rules with absolute precision:
+# 1. Fetch historical thread IDs from SQLite
+thread_ids = []
+db_path = os.path.join(os.getcwd(), "state.db")
+if os.path.exists(db_path):
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        # langgraph-checkpoint-sqlite stores threads in "checkpoints" table
+        cur.execute("SELECT DISTINCT thread_id FROM checkpoints")
+        rows = cur.fetchall()
+        thread_ids = sorted([r[0] for r in rows], reverse=True)
+    except Exception as e:
+        pass
 
-1.  **Modular File Structure:** To promote maintainability, split resource definitions into logical files:
-    * `main.tf`: Provider configuration and `locals` block only.
-    * `vpc.tf`: All networking resources (VPC, Subnets, IGW, NAT Gateways, Route Tables).
-    * `security.tf`: All security-related resources (`aws_security_group`).
-    * `compute.tf`: All compute resources (`aws_instance`, `data "aws_ami"`).
-    * `variables.tf`: All input variables.
-    * `outputs.tf`: All outputs.
-    * `backend.tf`: Remote state configuration.
+# 2. Sidebar selection
+selected_thread = st.sidebar.selectbox("Past Conversations", ["New Chat"] + thread_ids)
 
-2.  **Highly Available & Scalable Network:**
-    * **Multi-AZ by Default:** The network must be highly available. Create resources across a configurable number of Availability Zones (`az_count` variable, default to 2).
-    * **HA NAT Gateways:** For true resilience, provision one **NAT Gateway** and one **Elastic IP** in *each* Availability Zone.
-    * **Zonal Routing:** Create a separate private route table for *each* AZ. Ensure that each private subnet routes its outbound `0.0.0.0/0` traffic through the NAT Gateway located in its **own** Availability Zone. This prevents cross-AZ data transfer costs and improves fault tolerance.
-    * **Parameterized Subnets:** Allow flexible subnet sizing. Use variables like `public_subnet_newbits` and `private_subnet_newbits` in the `cidrsubnet` function.
+# 3. Session state management for active thread
+if selected_thread == "New Chat":
+    if "thread_id" not in st.session_state or st.session_state.thread_id in thread_ids:
+        st.session_state.thread_id = str(uuid.uuid4())
+else:
+    st.session_state.thread_id = selected_thread
 
-3.  **Security First (Principle of Least Privilege):**
-    * **Mandatory SSH CIDR:** The variable for allowed SSH ingress CIDR blocks (`allowed_ssh_cidr_blocks`) **must not have a default value**. This forces the user to define a secure, specific IP range and prevents accidental exposure with `0.0.0.0/0`.
-    * **Secure Instance Placement:** All `aws_instance` resources must be placed in **private subnets** by default.
-    * **Dynamic Security Group Rules:** Use a `dynamic` block and a `list(object({}))` variable to allow users to add additional, specific ingress rules beyond SSH.
+st.title(" Terraform AI Agent")
+st.markdown("Generates, validates, self-heals, and prices your AWS infrastructure code.")
 
-4.  **Outputs & Connectivity:**
-    * The EC2 instance is in a private subnet and is inaccessible via direct SSH from the internet.
-    * **Do not** generate a direct `ssh` command output.
-    * Instead, provide an output named `ssm_connection_command` with the command to connect using **AWS Systems Manager (SSM) Session Manager**, which is the modern, secure standard for private instance access.
-
-5.  **Code Quality & Reusability:**
-    * The code must be clean, readable, and strictly follow HashiCorp's official style conventions.
-    * All resource and variable names must use underscores (`_`).
-    * Use a `locals` block for common tags (`Project`, `Environment`, `ManagedBy`) and apply them consistently to all taggable resources.
-    * Never hardcode AMI IDs or AZ names. Use data sources to look them up dynamically.
-
-6.  **Output Format:**
-    * Provide **ONLY** the HCL code for all specified files.
-    * Clearly mark the start of each file with a comment (e.g., `# main.tf`).
-    * Do not include any other explanations, introductions, or closing remarks.
-"""
-
-# --- 2. Helper Function to Parse LLM Output ---
-
-def parse_terraform_code(response_content: str) -> dict:
-    """
-    Parses the raw LLM output string into a dictionary of filename: code.
-    This is crucial for displaying the code in a structured way.
-    """
-    files = {}
-    # Uses regular expressions to find code blocks marked with '# filename.tf'
-    pattern = r"#\s*(?P<filename>\w+\.tf)\s*\n(?P<code>.*?)(?=\n#\s*\w+\.tf|\Z)"
-    matches = re.finditer(pattern, response_content, re.DOTALL)
-    for match in matches:
-        filename = match.group('filename').strip()
-        code = match.group('code').strip()
-        files[filename] = code
-    return files
-
-# --- 3. Streamlit User Interface ---
-
-st.title("🚀 Production-Grade Terraform Generator")
-
-# Check for API key at the start and provide a clear error message.
-if "GOOGLE_API_KEY" not in os.environ:
-    st.error("Google API Key not found. Please set the GOOGLE_API_KEY environment variable in your .env file.")
-    st.stop()
-
-# Use st.text_area for a larger input box, which is better for descriptive prompts.
-user_input = st.text_area(
-    "Describe the AWS infrastructure you want to create:",
-    height=150,
-    placeholder="e.g., A resilient two-tier web application with a public-facing web server and a private database server in the eu-central-1 region."
-)
-
-if st.button("✨ Generate Terraform Code", type="primary"):
-    if not user_input.strip():
-        st.warning("Please describe the infrastructure you want to build.")
+# Helper function to render the UI components of a langgraph state
+def render_infra_state(final_state):
+    if not final_state:
+        return
+        
+    # 1. Validation Status
+    if final_state.get("is_valid", False):
+        st.success("✅ **Validation Passed:** Code successfully passed all `terraform validate` and `tflint` security checks.")
     else:
-        # Use a spinner to show the user that something is happening.
-        with st.spinner("🧑‍💻 Architecting your infrastructure... This may take a moment."):
+        st.error(f"❌ **Validation Failed:** Agent exhausted maximum retries ({final_state.get('retry_count', 0)}/3).")
+        with st.expander("View Underlying Validation Errors"):
+            st.code(final_state.get("validation_errors", ""), language="text")
+            
+    # 2. Agent Commentary
+    messages = final_state.get("messages", [])
+    if messages:
+         content = messages[-1].content
+         # Remove raw codeblocks from the commentary
+         text_only = re.sub(r"```[^\n]*\n.*?```", "", content, flags=re.DOTALL).strip()
+         if text_only:
+             st.info(text_only)
+
+    # 3. Generated Code (Tabbed Files)
+    st.markdown("### 🏗️ Generated Terraform Blueprint")
+    files = final_state.get("terraform_code", {})
+    if files:
+        tabs = st.tabs(list(files.keys()))
+        for i, (filename, code) in enumerate(files.items()):
+            with tabs[i]:
+                st.code(code, language="hcl")
+                
+    # 4. Citations & FinOps side-by-side
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### 📚 Grounded Knowledge References")
+        citations = final_state.get("citations", [])
+        if citations:
+            for c in citations:
+                st.markdown(f"- 📄 `{c}`")
+        else:
+            st.markdown("_No external knowledge sources utilized._")
+            
+    with col2:
+        st.markdown("### 💰 FinOps Monthly Cost Estimation")
+        cost = final_state.get("cost_estimate", "")
+        if cost and "CLI not installed" not in cost:
+            st.code(cost, language="text")
+        else:
+            st.markdown("_Cost estimation unavailable._")
+
+# Load chat history into memory natively from DB
+config = {"configurable": {"thread_id": st.session_state.thread_id}}
+historical_state = app.get_state(config)
+
+if historical_state and historical_state.values:
+    # Render user's original request
+    user_req = historical_state.values.get("user_request", "")
+    if user_req:
+        with st.chat_message("user"):
+            st.markdown(user_req)
+    # Render the assistant's previous infrastructure
+    with st.chat_message("assistant"):
+        render_infra_state(historical_state.values)
+        st.markdown("---")
+        st.markdown("*Previous Session Reloaded from SQLite Checkpoint Database* ✅")
+
+# Start actual chat input for a New task
+if prompt := st.chat_input("What infrastructure do you want to build?"):
+    
+    # Let users update an existing chat or start a new one
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.status("Initializing Workflow...", expanded=True) as status:
+            initial_state = {
+                "user_request": prompt,
+                "messages": [],
+                "retrieved_context": "",
+                "citations": [],
+                "terraform_code": {},
+                "validation_errors": "",
+                "is_valid": False,
+                "retry_count": 0,
+                "cost_estimate": ""
+            }
+            
             try:
-                # Initialize the model. Note the updated, valid model name.
-                model = ChatGoogleGenerativeAI(model='gemini-2.5-pro', temperature=0)
-
-                # Use the proper LangChain message format for clarity and reliability.
-                messages = [
-                    SystemMessage(content=SYSTEM_PROMPT),
-                    HumanMessage(content=user_input)
-                ]
-
-                # Invoke the model
-                result = model.invoke(messages)
-
-                # Parse the raw output into separate files
-                terraform_files = parse_terraform_code(result.content)
-
-                if not terraform_files:
-                    st.error("Failed to parse the output from the AI. The AI may not have followed the requested format.")
-                    st.subheader("Raw AI Output:")
-                    st.code(result.content, language='text')
-                else:
-                    st.success("Terraform code generated successfully!")
-                    
-                    # Use st.tabs to create a beautiful, organized display for each file.
-                    filenames = list(terraform_files.keys())
-                    tabs = st.tabs(filenames)
-
-                    for i, filename in enumerate(filenames):
-                        with tabs[i]:
-                            st.code(terraform_files[filename], language='hcl', line_numbers=True)
-
+                for event in app.stream(initial_state, config=config):
+                    for node_name, state_update in event.items():
+                        if node_name == "Retriever_Node":
+                            status.update(label="📚 Agent is searching internal corporate knowledge base...", state="running")
+                            st.write(f"Retriever finished. (Found {len(state_update.get('citations', []))} relevant docs to ground the generation)")
+                        elif node_name == "Architect_Node":
+                            status.update(label="🛠️ Agent is writing Terraform framework...", state="running")
+                            st.write("Architect finished drafting initial code.")
+                        elif node_name == "Validator_Node":
+                            status.update(label="🔎 Validating code against security and syntax policies...", state="running")
+                            if state_update.get("is_valid"):
+                                st.write("Validation passed! 🎉")
+                            else:
+                                st.write("Syntax/Security validation failed. ⚠️ Routing to Fixer Node...")
+                        elif node_name == "Fixer_Node":
+                            status.update(label=f"🔧 Agent is self-healing code (Attempt {state_update.get('retry_count', 1)})...", state="running")
+                            st.write("Fixer applied patches.")
+                        elif node_name == "Cost_Estimator_Node":
+                            status.update(label="💰 Evaluating Cloud Deployment Cost...", state="running")
+                            st.write("Infracost Analysis Complete.")
             except Exception as e:
-                st.error(f"An unexpected error occurred: {e}")
+                status.update(label="Workflow Failed", state="error")
+                st.error(f"Error executing agent workflow: {e}")
+                st.stop()
+                
+            status.update(label="Pipeline Complete!", state="complete", expanded=False)
+            
+        # Render the final new state
+        final_state = app.get_state(config).values
+        if final_state:
+            render_infra_state(final_state)

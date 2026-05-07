@@ -23,7 +23,7 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     user_request: str
     retrieved_context: str
-    citations: list[str] 
+    citations: list[str]  #  NEW: Track exactly which docs were used
     terraform_code: Dict[str, str]
     validation_errors: str
     is_valid: bool
@@ -112,21 +112,11 @@ def retriever_node(state: AgentState):
         embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embedding_model)
         
-        # 1. Base Retriever (Wide net: Top 12 — slightly over-fetch to compensate for post-filter)
-        # NOTE: We do NOT use a Chroma $ne filter here. Chroma's $ne does a full
-        # collection scan which causes 'Error finding id' on large DBs.
-        # Instead we filter AFTER retrieval in pure Python (safe & instant).
-        base_retriever = vector_store.as_retriever(search_kwargs={"k": 12})
-        
-        # One-shot cleanup: delete any stale iac_eval_dataset chunks still in the DB
-        try:
-            col = vector_store._collection
-            stale = col.get(where={"source": "iac_eval_dataset"}, include=[])
-            if stale["ids"]:
-                col.delete(ids=stale["ids"])
-                print(f"  🧹 Cleaned up {len(stale['ids'])} stale iac_eval_dataset chunks from DB.")
-        except Exception:
-            pass  # Non-fatal — filter below will still exclude them
+        # 1. Base Retriever (Wide net: Top 10)
+        base_retriever = vector_store.as_retriever(search_kwargs={
+            "k": 10,
+            "filter": {"source": {"$ne": "iac_eval_dataset"}}
+        })
         
         # 2. MultiQuery
         print("  Expanding query into multiple semantic paths...")
@@ -151,16 +141,17 @@ def retriever_node(state: AgentState):
             )
         except ImportError as e:
             print(f"   Reranker dependencies not available ({e}). Falling back to pure MultiQuery.")
-            base_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+            base_retriever = vector_store.as_retriever(search_kwargs={
+                "k": 5,
+                "filter": {"source": {"$ne": "iac_eval_dataset"}}
+            })
             retriever_pipeline = MultiQueryRetriever.from_llm(retriever=base_retriever, llm=mq_llm)
 
         print("   Executing Smart Search Pipeline...")
         docs = retriever_pipeline.invoke(user_request)
         
-        # Post-retrieval filter: exclude iac_eval_dataset (evaluation-only data,
-        # not real Terraform provider docs — should never appear in citations)
-        EXCLUDED_SOURCES = {"iac_eval_dataset"}
-        docs = [d for d in docs if d.metadata.get("source", "") not in EXCLUDED_SOURCES]
+        # 4. Post-Retrieval Safety Filter: Ensure iac_eval_dataset is never used
+        docs = [doc for doc in docs if "iac_eval_dataset" not in str(doc.metadata.get("source", ""))]
         
         context = "\n\n".join([doc.page_content for doc in docs])
         
@@ -170,7 +161,7 @@ def retriever_node(state: AgentState):
             if src not in citations:
                 citations.append(src)
                 
-        print(f" Retrieved {len(docs)} highly accurate documents (eval data excluded).")
+        print(f" Retrieved {len(docs)} highly accurate documents.")
         return {"retrieved_context": context, "citations": citations}
     except Exception as e:
         print(f"Retrieval error: {e}. Proceeding without context.")
@@ -363,7 +354,7 @@ app = workflow.compile(checkpointer=memory)
 if __name__ == "__main__":
     print("Welcome to the Advanced Smart-RAG Agentic Workflow Tester!")
     
-    user_input = "Configure a Route 53 record with an Elastic Load Balancer resource. Call the zone primary and the elb main"
+    user_input = "create a AWS codebuild project resource with example iam role, environment variables, secondary sources, secondary artifacts."
     print(f"\nRequest: {user_input}\n")
     
     initial_state = {

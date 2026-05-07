@@ -1,7 +1,7 @@
 import os
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 
-DOCS_PATH = "/home/rahulvaishnav068/IDP/terraform-provider-aws/website/docs/r" 
+DOCS_PATH = "/home/rahul/RAG-based-IAC/terraform-provider-aws/website/docs/r" 
 
 # --- THE FIX ---
 # Change the glob pattern to match the actual files.

@@ -2,79 +2,97 @@ import os
 import re
 import tempfile
 import shutil
-import subprocess
+import asyncio
 import operator
 from typing import TypedDict, Annotated, Sequence, Dict
 
 from dotenv import load_dotenv
 load_dotenv()
 
-os.environ["LANGCHAIN_PROJECT"] = "Agent_Workflow_Advanced_RAG"
+os.environ["LANGCHAIN_PROJECT"] = "Agent_Workflow_Advanced_RAG_Prod"
 
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, START, END
+# Note: For full production, scale up to AsyncPostgresSaver instead of SqliteSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 import sqlite3
+
+from pydantic import BaseModel, Field
 
 # --- 1. Define the Agent State ---
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     user_request: str
     retrieved_context: str
-    citations: list[str] 
+    citations: list[str]
     terraform_code: Dict[str, str]
     validation_errors: str
     is_valid: bool
     retry_count: int
     cost_estimate: str
 
-# --- Helper Functions ---
-def parse_terraform_code(response_content: str) -> dict:
-    files = {}
-    pattern_md = r"(?:\*\*|#\s)?(?P<filename>[\w\-_]+\.tf)(?:\*\*)?.*?\n```(?:hcl|terraform)?\n(?P<code>.*?)```"
-    matches = re.finditer(pattern_md, response_content, re.DOTALL | re.IGNORECASE)
-    for match in matches:
-        filename = match.group('filename').strip()
-        code = match.group('code').strip()
-        files[filename] = code
-    return files if files else {}
+# --- Introducing Pydantic Structured Output ---
+class TerraformFiles(BaseModel):
+    files: list[dict[str, str]] = Field(
+        description="List of dictionaries mapping filenames (like 'main.tf') to exact required Terraform code."
+    )
 
-def validate_terraform_code(files: dict) -> tuple[bool, str]:
+def files_to_dict(tf_files: TerraformFiles) -> dict:
+    """Helper to convert Pydantic to the dictionary format expected by validation."""
+    return {item["filename"]: item["code"] for item in tf_files.files} if tf_files.files else {}
+
+# --- Asynchronous Subprocess Execution Helper ---
+async def validate_terraform_code(files: dict) -> tuple[bool, str]:
     if not files:
         return False, "No Terraform files found to validate."
     temp_dir = tempfile.mkdtemp()
     try:
+        # 1. Write the files 
         for filename, content in files.items():
             with open(os.path.join(temp_dir, filename), "w") as f:
                 f.write(content)
         
-        if shutil.which("terraform") is None:
+        terraform_path = shutil.which("terraform")
+        if terraform_path is None:
             return False, "Terraform binary not found."
 
-        init_cmd = ["terraform", "init", "-backend=false"]
-        init_res = subprocess.run(init_cmd, cwd=temp_dir, capture_output=True, text=True)
-        if init_res.returncode != 0:
-            return False, f"Terraform Init Failed:\n{init_res.stderr}\n{init_res.stdout}"
+        # 2. Asynchronous Terraform Executions
+        init_proc = await asyncio.create_subprocess_exec(
+            terraform_path, "init", "-backend=false",
+            cwd=temp_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await init_proc.communicate()
+        if init_proc.returncode != 0:
+            return False, f"Terraform Init Failed:\n{stderr.decode()}\n{stdout.decode()}"
 
-        validate_cmd = ["terraform", "validate"]
-        val_res = subprocess.run(validate_cmd, cwd=temp_dir, capture_output=True, text=True)
-        if val_res.returncode != 0:
-            return False, f"Terraform Validation Failed:\n{val_res.stderr}\n{val_res.stdout}"
+        val_proc = await asyncio.create_subprocess_exec(
+            terraform_path, "validate",
+            cwd=temp_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await val_proc.communicate()
+        if val_proc.returncode != 0:
+            return False, f"Terraform Validation Failed:\n{stderr.decode()}\n{stdout.decode()}"
 
-        if shutil.which("tflint") is not None:
+        tflint_path = shutil.which("tflint")
+        if tflint_path is not None:
             tflint_config = os.path.join(os.getcwd(), ".tflint.hcl")
             if os.path.exists(tflint_config):
                 shutil.copy(tflint_config, temp_dir)
-                subprocess.run(["tflint", "--init"], cwd=temp_dir, capture_output=True)
-            tflint_res = subprocess.run(["tflint", "--format", "compact"], cwd=temp_dir, capture_output=True, text=True)
-            if tflint_res.returncode != 0:
-                return False, f"TFLint Security Checks Failed:\n{tflint_res.stdout}\n{tflint_res.stderr}"
+                tflint_init = await asyncio.create_subprocess_exec(
+                    tflint_path, "--init", cwd=temp_dir, 
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                await tflint_init.communicate()
             
-        # We skip `terraform plan` because it requires valid AWS credentials to reach the AWS API
-        # By verifying syntax via `terraform validate` and security via `tflint`, we implicitly 
-        # ensure the infrastructure code is sound/deployable.
+            tflint_proc = await asyncio.create_subprocess_exec(
+                tflint_path, "--format", "compact", cwd=temp_dir,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await tflint_proc.communicate()
+            if tflint_proc.returncode != 0:
+                return False, f"TFLint Security Checks Failed:\n{stdout.decode()}\n{stderr.decode()}"
 
         return True, "Success"
     except Exception as e:
@@ -86,12 +104,9 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0.2)
 mq_llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0.0)
 
-# --- 2. Define the Nodes (Workers) ---
+# --- 2. Define the Async Nodes (Workers) ---
 
-def retriever_node(state: AgentState):
-    """
-    Advanced Retriever: MultiQuery + Cross-Encoder Reranker
-    """
+async def retriever_node(state: AgentState):
     print("--- ADVANCED RETRIEVER NODE ---")
     user_request = state.get("user_request", "")
     
@@ -101,7 +116,6 @@ def retriever_node(state: AgentState):
         from langchain_classic.retrievers.multi_query import MultiQueryRetriever
         import logging
         
-        # Suppress verbose MultiQuery logs
         logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.WARNING)
         
         DB_PATH = os.getenv("DB_PATH", os.path.join(os.getcwd(), "chroma_db_terraform"))
@@ -109,58 +123,42 @@ def retriever_node(state: AgentState):
             print("Warning: ChromaDB not found. Proceeding without context.")
             return {"retrieved_context": "", "citations": []}
             
-        embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embedding_model)
+        def load_store():
+            embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+            return Chroma(persist_directory=DB_PATH, embedding_function=embedding_model)
         
-        # 1. Base Retriever (Wide net: Top 12 — slightly over-fetch to compensate for post-filter)
-        # NOTE: We do NOT use a Chroma $ne filter here. Chroma's $ne does a full
-        # collection scan which causes 'Error finding id' on large DBs.
-        # Instead we filter AFTER retrieval in pure Python (safe & instant).
-        base_retriever = vector_store.as_retriever(search_kwargs={"k": 12})
+        vector_store = await asyncio.to_thread(load_store)
         
-        # One-shot cleanup: delete any stale iac_eval_dataset chunks still in the DB
-        try:
-            col = vector_store._collection
-            stale = col.get(where={"source": "iac_eval_dataset"}, include=[])
-            if stale["ids"]:
-                col.delete(ids=stale["ids"])
-                print(f"  🧹 Cleaned up {len(stale['ids'])} stale iac_eval_dataset chunks from DB.")
-        except Exception:
-            pass  # Non-fatal — filter below will still exclude them
+        base_retriever = vector_store.as_retriever(search_kwargs={
+            "k": 10,
+            "filter": {"source": {"$ne": "iac_eval_dataset"}}
+        })
         
-        # 2. MultiQuery
         print("  Expanding query into multiple semantic paths...")
         mq_retriever = MultiQueryRetriever.from_llm(retriever=base_retriever, llm=mq_llm)
-        
         retriever_pipeline = mq_retriever
         
-        # 3. Reranker (Precision)
         try:
             from langchain_classic.retrievers.document_compressors.cross_encoder_rerank import CrossEncoderReranker
             from langchain_community.cross_encoders import HuggingFaceCrossEncoder
             from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
             
             print("    Booting up CrossEncoder Reranker...")
-            # ms-marco is the standard for fast semantic reranking based on sentence-transformers
-            cross_encoder = HuggingFaceCrossEncoder(model_name="cross-encoder/ms-marco-MiniLM-L-6-v2")
-            compressor = CrossEncoderReranker(model=cross_encoder, top_n=5)
-            
+            def load_reranker():
+                cross_encoder = HuggingFaceCrossEncoder(model_name="cross-encoder/ms-marco-MiniLM-L-6-v2")
+                return CrossEncoderReranker(model=cross_encoder, top_n=5)
+                
+            compressor = await asyncio.to_thread(load_reranker)
             retriever_pipeline = ContextualCompressionRetriever(
                 base_compressor=compressor, 
                 base_retriever=mq_retriever
             )
         except ImportError as e:
             print(f"   Reranker dependencies not available ({e}). Falling back to pure MultiQuery.")
-            base_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-            retriever_pipeline = MultiQueryRetriever.from_llm(retriever=base_retriever, llm=mq_llm)
-
+            
         print("   Executing Smart Search Pipeline...")
-        docs = retriever_pipeline.invoke(user_request)
-        
-        # Post-retrieval filter: exclude iac_eval_dataset (evaluation-only data,
-        # not real Terraform provider docs — should never appear in citations)
-        EXCLUDED_SOURCES = {"iac_eval_dataset"}
-        docs = [d for d in docs if d.metadata.get("source", "") not in EXCLUDED_SOURCES]
+        # AINVOKE replaces invoke for async
+        docs = await retriever_pipeline.ainvoke(user_request)
         
         context = "\n\n".join([doc.page_content for doc in docs])
         
@@ -170,49 +168,41 @@ def retriever_node(state: AgentState):
             if src not in citations:
                 citations.append(src)
                 
-        print(f" Retrieved {len(docs)} highly accurate documents (eval data excluded).")
+        print(f" Retrieved {len(docs)} highly accurate documents.")
         return {"retrieved_context": context, "citations": citations}
     except Exception as e:
         print(f"Retrieval error: {e}. Proceeding without context.")
         return {"retrieved_context": "", "citations": []}
 
-def architect_node(state: AgentState):
+async def architect_node(state: AgentState):
     print("--- ARCHITECT NODE ---")
     user_request = state.get("user_request", "")
     context = state.get("retrieved_context", "")
     citations = state.get("citations", [])
     
-    citation_text = "\n".join([f"- {c}" for c in citations]) if citations else "No explicit sources provided."
+    citation_text = "\n".join([f"- {c}" for c in citations]) if citations else "No sources."
     
     system_prompt = (
         "You are a Senior Cloud Architect and Terraform Expert. "
-        "Your goal is to design and implement a complete, production-grade infrastructure solution.\n"
-        "\n"
+        "Your goal is to design and implement a complete, production-grade infrastructure solution.\n\n"
         "### INSTRUCTIONS ###\n"
         "1. **Analyze**: Break down the user's request (Compute, Network, Storage, IAM).\n"
         "2. **Retrieve**: Use the Context provided below for exact syntax and patterns.\n"
-        "3. **Structure**: output a professional file structure (e.g., main.tf, variables.tf).\n"
-        "4. **Cite**: Write a brief summary answering the user, and explicitly mention which specific files/sources you derived the design from under a '### References' section.\n"
+        "3. **Structure**: Output MUST BE explicitly structured using the provided JSON format for Terraform files.\n"
         "\n"
-        "### CRITICAL SECURITY RULES (YOU MUST FOLLOW THESE) ###\n"
+        "### CRITICAL SECURITY RULES ###\n"
         "1. NEVER allow ingress from '0.0.0.0/0' on port 22. Use '10.0.0.0/8'.\n"
         "2. Ensure all Security Groups have a description.\n"
-        "3. Remove/restrict default egress '0.0.0.0/0' rules when possible.\n"
-        "4. ENABLE `ebs_optimized = true` and encryption on EC2.\n"
-        "5. DO NOT assign public IPs to instances.\n"
-        "\n"
-        "### CHAT HISTORY & PREVIOUS STATE ###\n"
-        "Here are previous interactions and any previous Terraform code generated in this session:\n"
+        "3. ENABLE `ebs_optimized = true` and encryption on EC2.\n"
+        "4. DO NOT assign public IPs to instances.\n\n"
+        "### CHAT HISTORY ###\n"
         "{history}\n\n"
-        "If the user is asking you to modify/update an existing resource, rewrite the complete previous code incorporating the modifications. DO NOT omit previously generated code unless explicitly requested.\n"
-        "\n"
         "### CONTEXT FROM SMART SEARCH ###\n"
         "{context}\n\n"
-        "### AVAILABLE CITATIONS ###\n"
+        "### CITATIONS ###\n"
         f"{citation_text}\n"
     )
     
-    # Extract previous messages for the prompt
     history = "\n".join([msg.content for msg in state.get("messages", []) if getattr(msg, "name", "") != "Fixer_Node"])
     if not history:
         history = "None."
@@ -222,15 +212,24 @@ def architect_node(state: AgentState):
         ("human", "{request}")
     ])
     
-    chain = prompt | llm
-    response = chain.invoke({"request": user_request, "context": context, "history": history})
+    # NEW Structured LLM chain
+    structured_llm = llm.with_structured_output(TerraformFiles)
+    chain = prompt | structured_llm
     
-    files = parse_terraform_code(response.content)
+    # Async Invoke
+    response = await chain.ainvoke({"request": user_request, "context": context, "history": history})
     
-    # Instead of wiping messages, append the new interaction
+    # Parse strictly into a correct dict
+    files = files_to_dict(response)
+    
+    # Provide a readable string for message history since Pydantic returned an object
+    readable_response = f"I have generated {len(files)} files based on your constraints.\n\n"
+    for filename, code in files.items():
+        readable_response += f"**{filename}**\n```terraform\n{code}\n```\n\n"
+    
     new_messages = list(state.get("messages", [])) + [
         HumanMessage(content=user_request), 
-        AIMessage(content=response.content)
+        AIMessage(content=readable_response)
     ]
     
     return {
@@ -239,26 +238,21 @@ def architect_node(state: AgentState):
         "messages": new_messages
     }
 
-def validator_node(state: AgentState):
-    """
-    Runs terraform validate & tflint on the current terraform_code.
-    """
-    print("---  VALIDATOR NODE ---")
+async def validator_node(state: AgentState):
+    print("--- VALIDATOR NODE ---")
     files = state.get("terraform_code", {})
     
-    is_valid, validation_errors = validate_terraform_code(files)
+    # Call async validation
+    is_valid, validation_errors = await validate_terraform_code(files)
     
     return {
         "is_valid": is_valid,
         "validation_errors": validation_errors if not is_valid else "Success"
     }
 
-def fixer_node(state: AgentState):
-    """
-    Looks at validation_errors and the terraform_code and re-generates fixed code.
-    """
+async def fixer_node(state: AgentState):
     attempt = state.get('retry_count', 0) + 1
-    print(f"---  FIXER NODE (Attempt {attempt}) ---")
+    print(f"--- FIXER NODE (Attempt {attempt}) ---")
     
     validation_errors = state.get("validation_errors", "")
     files = state.get("terraform_code", {})
@@ -266,27 +260,32 @@ def fixer_node(state: AgentState):
     code_context = "\n".join([f"--- {k} ---\n{v}" for k, v in files.items()])
     
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a Terraform architect fixing broken code. Fix the errors and output the COMPLETE corrected Terraform files in markdown format with their filenames."),
-        ("human", "Here is the broken code:\n\n{code}\n\nHere are the validation errors:\n\n{errors}\n\nPlease fix the code.")
+        ("system", "You are a Terraform architect fixing broken code. Output identically in the strict required structured formatting."),
+        ("human", "Here is the broken code:\n\n{code}\n\nHere are the validation errors:\n\n{errors}\n\nPlease fix the files.")
     ])
     
-    chain = prompt | llm
-    response = chain.invoke({"code": code_context, "errors": validation_errors})
+    # Use Structured Output
+    structured_llm = llm.with_structured_output(TerraformFiles)
+    chain = prompt | structured_llm
     
-    new_files = parse_terraform_code(response.content)
+    # Async Invoke
+    response = await chain.ainvoke({"code": code_context, "errors": validation_errors})
+    
+    new_files = files_to_dict(response)
     if not new_files:
         new_files = files # Fallback
         
+    readable_response = f"I fixed {len(new_files)} files based on the errors.\n\n"
+    for filename, code in new_files.items():
+        readable_response += f"**{filename}**\n```terraform\n{code}\n```\n\n"
+    
     return {
         "terraform_code": new_files,
         "retry_count": attempt,
-        "messages": [AIMessage(content=response.content)]
+        "messages": [AIMessage(content=readable_response)]
     }
 
-def cost_estimator_node(state: AgentState):
-    """
-    Runs Infracost to calculate the estimated monthly cost of the generated infrastructure.
-    """
+async def cost_estimator_node(state: AgentState):
     print("--- COST ESTIMATOR NODE ---")
     files = state.get("terraform_code", {})
     if not files:
@@ -294,12 +293,10 @@ def cost_estimator_node(state: AgentState):
         
     temp_dir = tempfile.mkdtemp()
     try:
-        # Write files
         for filename, content in files.items():
             with open(os.path.join(temp_dir, filename), "w") as f:
                 f.write(content)
                 
-        # Run infracost
         infracost_path = shutil.which("infracost")
         if infracost_path is None:
             local_bin_path = os.path.expanduser("~/.local/bin/infracost")
@@ -309,14 +306,17 @@ def cost_estimator_node(state: AgentState):
         if infracost_path is None:
             return {"cost_estimate": "Infracost CLI not installed. Cannot estimate cost."}
             
-        # We need infracost breakdown text output
-        cmd = [infracost_path, "breakdown", "--path", temp_dir, "--format", "table", "--no-color"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        # Async Subprocess for Infracost
+        proc = await asyncio.create_subprocess_exec(
+            infracost_path, "breakdown", "--path", temp_dir, "--format", "table", "--no-color",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
         
-        if res.returncode == 0:
-            return {"cost_estimate": res.stdout.strip()}
+        if proc.returncode == 0:
+            return {"cost_estimate": stdout.decode().strip()}
         else:
-            return {"cost_estimate": f"Cost estimation failed:\n{res.stderr}"}
+            return {"cost_estimate": f"Cost estimation failed:\n{stderr.decode()}"}
             
     except Exception as e:
         return {"cost_estimate": f"Error calculating cost: {e}"}
@@ -343,7 +343,6 @@ workflow.add_node("Validator_Node", validator_node)
 workflow.add_node("Fixer_Node", fixer_node)
 workflow.add_node("Cost_Estimator_Node", cost_estimator_node)
 
-# Flow: Start -> Retriever -> Architect -> Validator <-> Fixer
 workflow.add_edge(START, "Retriever_Node")
 workflow.add_edge("Retriever_Node", "Architect_Node")
 workflow.add_edge("Architect_Node", "Validator_Node")
@@ -351,19 +350,19 @@ workflow.add_conditional_edges("Validator_Node", routing_edge, {"end": END, "fix
 workflow.add_edge("Fixer_Node", "Validator_Node")
 workflow.add_edge("Cost_Estimator_Node", END)
 
-import os
-db_path = os.path.join(os.getcwd(), "state.db")
-conn = sqlite3.connect(db_path, check_same_thread=False)
-memory = SqliteSaver(conn)
-memory.setup()
+from langgraph.checkpoint.memory import MemorySaver
 
+# For global exports (like Streamlit importing `app`), we use MemorySaver 
+# because it operates perfectly with async workflows out-of-the-box.
+# Initializing database connections (like AsyncSqliteSaver) requires an active async event loop.
+memory = MemorySaver()
 app = workflow.compile(checkpointer=memory)
 
 # --- 5. CLI Test Block ---
-if __name__ == "__main__":
-    print("Welcome to the Advanced Smart-RAG Agentic Workflow Tester!")
+async def main():
+    print("Welcome to the Advanced Smart-RAG Agentic Workflow Tester (PRODUCTION READY VERSION)!")
     
-    user_input = "Configure a Route 53 record with an Elastic Load Balancer resource. Call the zone primary and the elb main"
+    user_input = "create a AWS codebuild project resource with example iam role, environment variables, secondary sources, secondary artifacts."
     print(f"\nRequest: {user_input}\n")
     
     initial_state = {
@@ -380,7 +379,15 @@ if __name__ == "__main__":
     
     print("\n🚀 Starting workflow...\n")
     config = {"configurable": {"thread_id": "advanced_test_thread"}}
-    final_state = app.invoke(initial_state, config=config)
+    
+    # In production, to persist to a database async, you use a context manager like this:
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    db_path = os.path.join(os.getcwd(), "state.db")
+    
+    async with AsyncSqliteSaver.from_conn_string(db_path) as db_memory:
+        app_with_db = workflow.compile(checkpointer=db_memory)
+        # Now explicitly awaiting ainvoke
+        final_state = await app_with_db.ainvoke(initial_state, config=config)
     
     print("\n==================================")
     print("🏁 WORKFLOW COMPLETE")
@@ -399,15 +406,13 @@ if __name__ == "__main__":
         print(final_state.get("validation_errors"))
         print("\n=============\n")
         
-    print("\nAgent Commentary & Citations:")
+    print("\nAgent Commentary:")
     messages = final_state.get("messages", [])
     if messages:
-        # Print the LLM's raw message block minus the raw terraform blocks for cleaner output
+        # Pydantic is already mapped back to a clean AIMessage locally
         content = messages[-1].content
-        text_only = re.sub(r"```[^\n]*\n.*?```", "\n[ Terraform Code Rendered Below ]\n", content, flags=re.DOTALL)
-        print(text_only)
-        
-    print("\nGenerated Files:")
-    for filename, code in final_state.get("terraform_code", {}).items():
-        print(f"\n--- {filename} ---")
-        print(code)
+        print(content)
+
+if __name__ == "__main__":
+    # Crucial for async execution in python script runs
+    asyncio.run(main())

@@ -7,13 +7,13 @@ from langchain_chroma import Chroma
 from dotenv import load_dotenv
 
 # Load env vars
-# load_dotenv()
-os.environ["API_KEY"] = os.getenv("API_KEY")
-api_key = os.getenv("API_KEY")
+load_dotenv()
+# os.environ["API_KEY"] = os.getenv("API_KEY")
+# api_key = os.getenv("API_KEY")
 
 
 # --- CONFIGURATION ---
-DOCS_PATH = "/home/rahulvaishnav068/IDP/terraform-provider-aws/website/docs/r"
+DOCS_PATH = "/home/rahul/RAG-based-IAC/terraform-provider-aws/website/docs/r"
 DB_PATH = "./chroma_db_terraform"
 
 # --- 1. INITIALIZE EMBEDDINGS (THE FIX) ---
@@ -29,7 +29,7 @@ else:
     print("✨ Creating new vector store...")
     
     # --- LOAD ---
-    print("   Loading documentation...")
+    print(" Loading documentation...")
     loader = DirectoryLoader(
         DOCS_PATH,
         glob="**/*.html.markdown",

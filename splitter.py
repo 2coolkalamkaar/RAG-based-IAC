@@ -4,7 +4,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # --- 1. LOAD (Code you already have) ---
 
-DOCS_PATH = "/home/rahulvaishnav068/IDP/terraform-provider-aws/website/docs/r" 
+DOCS_PATH = "/home/rahul/RAG-based-IAC/terraform-provider-aws/website/docs/r" 
 
 loader = DirectoryLoader(
     DOCS_PATH,

@@ -191,7 +191,7 @@ if __name__ == "__main__":
     
     # We provide a hardcoded test input for automated testing, or it can be interactive
     # For this test run, we'll try a common request that might need fixing
-    user_input = " create a AWS codebuild project resource with example iam role, environment variables, secondary sources, secondary artifacts."
+    user_input = "Configure a Route 53 record with an Elastic Load Balancer resource. Call the zone primary and the elb main"
     print(f"\nRequest: {user_input}\n")
     
     initial_state = {

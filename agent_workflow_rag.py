@@ -257,7 +257,7 @@ app = workflow.compile(checkpointer=memory)
 if __name__ == "__main__":
     print("Welcome to the Agentic RAG Terraform Workflow Tester!")
     
-    user_input = "Create an AWS VPC resource with a subnet and associated network ACLs to control both ingress and egress traffic"
+    user_input = "create a server for my storage service"
     print(f"\nRequest: {user_input}\n")
     
     initial_state = {
