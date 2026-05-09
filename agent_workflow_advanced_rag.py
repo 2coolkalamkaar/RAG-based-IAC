@@ -280,7 +280,7 @@ def fixer_node(state: AgentState):
     return {
         "terraform_code": new_files,
         "retry_count": attempt,
-        "messages": [AIMessage(content=response.content)]
+        "messages": [AIMessage(content=response.content, name="Fixer_Node")]
     }
 
 def cost_estimator_node(state: AgentState):
@@ -378,8 +378,9 @@ if __name__ == "__main__":
         "cost_estimate": ""
     }
     
+    import uuid
     print("\n🚀 Starting workflow...\n")
-    config = {"configurable": {"thread_id": "advanced_test_thread"}}
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
     final_state = app.invoke(initial_state, config=config)
     
     print("\n==================================")
