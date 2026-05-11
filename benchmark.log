@@ -1,0 +1,105 @@
+🚀 Starting Workflow Benchmarking...
+
+=========================================
+📊 Benchmarking Workflow: Basic
+=========================================
+  [1/3] Testing: Provision an AWS Transit Gateway with peering, att...
+--- 🛠️ ARCHITECT NODE ---
+--- 🔎 VALIDATOR NODE ---
+✅ Code is valid! Finishing workflow.
+    -> Time: 62.8s | Valid: True | Score: 5/5 | Retries: 0 | Context Len: 0
+  [2/3] Testing: Deploy an Amazon EKS Cluster utilizing IRSA (IAM R...
+--- 🛠️ ARCHITECT NODE ---
+--- 🔎 VALIDATOR NODE ---
+⚠️ Validation failed. Routing to Fixer Node.
+--- 🔧 FIXER NODE (Attempt 1) ---
+--- 🔎 VALIDATOR NODE ---
+✅ Code is valid! Finishing workflow.
+    -> Time: 132.0s | Valid: True | Score: 5/5 | Retries: 1 | Context Len: 0
+  [3/3] Testing: Configure an AWS WAFv2 Web ACL associated with an ...
+--- 🛠️ ARCHITECT NODE ---
+--- 🔎 VALIDATOR NODE ---
+⚠️ Validation failed. Routing to Fixer Node.
+--- 🔧 FIXER NODE (Attempt 1) ---
+--- 🔎 VALIDATOR NODE ---
+✅ Code is valid! Finishing workflow.
+    -> Time: 93.6s | Valid: True | Score: 2/5 | Retries: 1 | Context Len: 0
+=========================================
+📊 Benchmarking Workflow: Standard RAG
+=========================================
+  [1/3] Testing: Provision an AWS Transit Gateway with peering, att...
+--- 📚 RETRIEVER NODE ---
+✅ Retrieved 6 documents for context.
+--- 🛠️ ARCHITECT NODE ---
+--- 🔎 VALIDATOR NODE ---
+✅ Code is valid! Finishing workflow.
+    -> Time: 73.2s | Valid: True | Score: 2/5 | Retries: 0 | Context Len: 4507
+  [2/3] Testing: Deploy an Amazon EKS Cluster utilizing IRSA (IAM R...
+--- 📚 RETRIEVER NODE ---
+✅ Retrieved 6 documents for context.
+--- 🛠️ ARCHITECT NODE ---
+--- 🔎 VALIDATOR NODE ---
+⚠️ Validation failed. Routing to Fixer Node.
+--- 🔧 FIXER NODE (Attempt 1) ---
+--- 🔎 VALIDATOR NODE ---
+⚠️ Validation failed. Routing to Fixer Node.
+--- 🔧 FIXER NODE (Attempt 2) ---
+--- 🔎 VALIDATOR NODE ---
+✅ Code is valid! Finishing workflow.
+    -> Time: 154.6s | Valid: True | Score: 2/5 | Retries: 2 | Context Len: 4199
+  [3/3] Testing: Configure an AWS WAFv2 Web ACL associated with an ...
+--- 📚 RETRIEVER NODE ---
+✅ Retrieved 6 documents for context.
+--- 🛠️ ARCHITECT NODE ---
+--- 🔎 VALIDATOR NODE ---
+⚠️ Validation failed. Routing to Fixer Node.
+--- 🔧 FIXER NODE (Attempt 1) ---
+--- 🔎 VALIDATOR NODE ---
+⚠️ Validation failed. Routing to Fixer Node.
+--- 🔧 FIXER NODE (Attempt 2) ---
+--- 🔎 VALIDATOR NODE ---
+⚠️ Validation failed. Routing to Fixer Node.
+--- 🔧 FIXER NODE (Attempt 3) ---
+--- 🔎 VALIDATOR NODE ---
+❌ Max retries reached. Finishing workflow with errors.
+    -> Time: 168.2s | Valid: False | Score: 1/5 | Retries: 3 | Context Len: 5142
+=========================================
+📊 Benchmarking Workflow: Advanced RAG
+=========================================
+  [1/3] Testing: Provision an AWS Transit Gateway with peering, att...
+--- ADVANCED RETRIEVER NODE ---
+  Expanding query into multiple semantic paths...
+    Booting up CrossEncoder Reranker...
+   Executing Smart Search Pipeline...
+ Retrieved 5 highly accurate documents (eval data excluded).
+--- ARCHITECT NODE ---
+---  VALIDATOR NODE ---
+ Code is valid! Routing to Cost Estimator.
+--- COST ESTIMATOR NODE ---
+    -> Time: 88.0s | Valid: True | Score: 5/5 | Retries: 0 | Context Len: 3353
+  [2/3] Testing: Deploy an Amazon EKS Cluster utilizing IRSA (IAM R...
+--- ADVANCED RETRIEVER NODE ---
+  Expanding query into multiple semantic paths...
+    Booting up CrossEncoder Reranker...
+   Executing Smart Search Pipeline...
+ Retrieved 5 highly accurate documents (eval data excluded).
+--- ARCHITECT NODE ---
+---  VALIDATOR NODE ---
+ Validation failed. Routing to Fixer Node.
+---  FIXER NODE (Attempt 1) ---
+---  VALIDATOR NODE ---
+ Code is valid! Routing to Cost Estimator.
+--- COST ESTIMATOR NODE ---
+    -> Time: 130.2s | Valid: True | Score: 5/5 | Retries: 1 | Context Len: 3182
+  [3/3] Testing: Configure an AWS WAFv2 Web ACL associated with an ...
+--- ADVANCED RETRIEVER NODE ---
+  Expanding query into multiple semantic paths...
+    Booting up CrossEncoder Reranker...
+   Executing Smart Search Pipeline...
+ Retrieved 5 highly accurate documents (eval data excluded).
+--- ARCHITECT NODE ---
+---  VALIDATOR NODE ---
+ Code is valid! Routing to Cost Estimator.
+--- COST ESTIMATOR NODE ---
+    -> Time: 64.1s | Valid: True | Score: 5/5 | Retries: 0 | Context Len: 3766
+\n✅ Benchmark complete! Saved to benchmark_results.json

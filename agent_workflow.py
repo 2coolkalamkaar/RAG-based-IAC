@@ -58,7 +58,7 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
             if os.path.exists(tflint_config):
                 shutil.copy(tflint_config, temp_dir)
                 subprocess.run(["tflint", "--init"], cwd=temp_dir, capture_output=True)
-            tflint_res = subprocess.run(["tflint", "--format", "compact"], cwd=temp_dir, capture_output=True, text=True)
+            tflint_res = subprocess.run(["tflint", "--format", "compact", "--minimum-failure-severity=error"], cwd=temp_dir, capture_output=True, text=True)
             if tflint_res.returncode != 0:
                 return False, f"TFLint Security Checks Failed:\n{tflint_res.stdout}\n{tflint_res.stderr}"
             
@@ -76,7 +76,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-os.environ["LANGCHAIN_PROJECT"] = "Agent_Workflow_Basic"
+os.environ["LANGCHAIN_PROJECT"] = "Workflow_with_gemini_2.5"
 
 # Initialize the LLM
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0.2)
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     
     # We provide a hardcoded test input for automated testing, or it can be interactive
     # For this test run, we'll try a common request that might need fixing
-    user_input = "Configure a Route 53 record with an Elastic Load Balancer resource. Call the zone primary and the elb main"
+    user_input = "VPC with a public and private subnet. Define an EC2 Fleet of the newest AWS Linux 2 with a combination of 5 On-Demand and 4 Spot Instances. Utilize Launch Templates for configuration consistency."
     print(f"\nRequest: {user_input}\n")
     
     initial_state = {

@@ -1,0 +1,66 @@
+
+Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8502
+  Network URL: http://10.128.0.2:8502
+  External URL: http://136.119.118.103:8502
+
+--- ADVANCED RETRIEVER NODE ---
+  Expanding query into multiple semantic paths...
+    Booting up CrossEncoder Reranker...
+   Executing Smart Search Pipeline...
+ Retrieved 5 highly accurate documents (eval data excluded).
+--- ARCHITECT NODE ---
+---  VALIDATOR NODE ---
+ Validation failed. Routing to Fixer Node.
+---  FIXER NODE (Attempt 1) ---
+---  VALIDATOR NODE ---
+ Validation failed. Routing to Fixer Node.
+---  FIXER NODE (Attempt 2) ---
+---  VALIDATOR NODE ---
+ Validation failed. Routing to Fixer Node.
+---  FIXER NODE (Attempt 3) ---
+---  VALIDATOR NODE ---
+ Max retries reached. Finishing workflow with errors.
+--- ADVANCED RETRIEVER NODE ---
+  Expanding query into multiple semantic paths...
+    Booting up CrossEncoder Reranker...
+   Executing Smart Search Pipeline...
+ Retrieved 5 highly accurate documents (eval data excluded).
+--- ARCHITECT NODE ---
+---  VALIDATOR NODE ---
+ Code is valid! Routing to Cost Estimator.
+--- COST ESTIMATOR NODE ---
+--- ADVANCED RETRIEVER NODE ---
+  Expanding query into multiple semantic paths...
+    Booting up CrossEncoder Reranker...
+   Executing Smart Search Pipeline...
+ Retrieved 5 highly accurate documents (eval data excluded).
+--- ARCHITECT NODE ---
+---  VALIDATOR NODE ---
+ Validation failed. Routing to Fixer Node.
+---  FIXER NODE (Attempt 1) ---
+---  VALIDATOR NODE ---
+ Validation failed. Routing to Fixer Node.
+---  FIXER NODE (Attempt 2) ---
+---  VALIDATOR NODE ---
+ Validation failed. Routing to Fixer Node.
+---  FIXER NODE (Attempt 3) ---
+---  VALIDATOR NODE ---
+ Max retries reached. Finishing workflow with errors.
+--- ADVANCED RETRIEVER NODE ---
+  Expanding query into multiple semantic paths...
+    Booting up CrossEncoder Reranker...
+   Executing Smart Search Pipeline...
+ Retrieved 5 highly accurate documents (eval data excluded).
+--- ARCHITECT NODE ---
+---  VALIDATOR NODE ---
+ Validation failed. Routing to Fixer Node.
+---  FIXER NODE (Attempt 1) ---
+---  VALIDATOR NODE ---
+ Code is valid! Routing to Cost Estimator.
+--- COST ESTIMATOR NODE ---
+  Stopping...

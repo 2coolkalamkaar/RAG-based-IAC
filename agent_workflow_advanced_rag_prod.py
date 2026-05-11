@@ -282,7 +282,7 @@ async def fixer_node(state: AgentState):
     return {
         "terraform_code": new_files,
         "retry_count": attempt,
-        "messages": [AIMessage(content=readable_response)]
+        "messages": [AIMessage(content=readable_response, name="Fixer_Node")]
     }
 
 async def cost_estimator_node(state: AgentState):
@@ -377,8 +377,9 @@ async def main():
         "cost_estimate": ""
     }
     
+    import uuid
     print("\n🚀 Starting workflow...\n")
-    config = {"configurable": {"thread_id": "advanced_test_thread"}}
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
     
     # In production, to persist to a database async, you use a context manager like this:
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver

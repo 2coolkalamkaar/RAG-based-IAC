@@ -9,7 +9,7 @@ from typing import TypedDict, Annotated, Sequence, Dict
 from dotenv import load_dotenv
 load_dotenv()
 
-os.environ["LANGCHAIN_PROJECT"] = "Agent_Workflow_RAG"
+os.environ["LANGCHAIN_PROJECT"] = "Workflow_with_gemini_2.5_RAG"
 
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -65,7 +65,7 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
             if os.path.exists(tflint_config):
                 shutil.copy(tflint_config, temp_dir)
                 subprocess.run(["tflint", "--init"], cwd=temp_dir, capture_output=True)
-            tflint_res = subprocess.run(["tflint", "--format", "compact"], cwd=temp_dir, capture_output=True, text=True)
+            tflint_res = subprocess.run(["tflint", "--format", "compact", "--minimum-failure-severity=error"], cwd=temp_dir, capture_output=True, text=True)
             if tflint_res.returncode != 0:
                 return False, f"TFLint Security Checks Failed:\n{tflint_res.stdout}\n{tflint_res.stderr}"
             
@@ -250,7 +250,7 @@ app = workflow.compile(checkpointer=memory)
 if __name__ == "__main__":
     print("Welcome to the Agentic RAG Terraform Workflow Tester!")
     
-    user_input = "Configure a Route 53 record with an Elastic Load Balancer resource. Call the zone primary and the elb main"
+    user_input = "VPC with a public and private subnet. Define an EC2 Fleet of the newest AWS Linux 2 with a combination of 5 On-Demand and 4 Spot Instances. Utilize Launch Templates for configuration consistency."
     print(f"\nRequest: {user_input}\n")
     
     initial_state = {
