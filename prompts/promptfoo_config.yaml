@@ -14,8 +14,8 @@ providers:
   - id: "python:agent_wrapper.py"
     label: "Advanced RAG Pipeline (Gemini 2.5 Pro)"
     config:
-      # Promptfoo will kill the call if it exceeds this (seconds)
-      timeout: 360
+      # Promptfoo expects this in milliseconds (6 minutes)
+      timeout: 360000
 
 # ── Prompts: the variable {{request}} is substituted from each test's vars ───
 prompts:
