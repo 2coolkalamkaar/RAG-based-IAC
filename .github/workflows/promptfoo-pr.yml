@@ -56,7 +56,7 @@ jobs:
           npx --yes promptfoo@latest eval \
             --config prompts/promptfoo_config.yaml \
             --output promptfoo-results.json \
-            --output-file promptfoo-report.html \
+            --output promptfoo-report.html \
             --no-cache
         env:
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
