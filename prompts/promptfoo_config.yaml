@@ -11,7 +11,7 @@ description: "RAG-based IaC Agent — AI Compliance & Regression Tests"
 
 # ── Provider: calls the real Advanced RAG LangGraph pipeline ─────────────────
 providers:
-  - id: "python:prompts/agent_wrapper.py"
+  - id: "python:agent_wrapper.py"
     label: "Advanced RAG Pipeline (Gemini 2.5 Pro)"
     config:
       # Promptfoo will kill the call if it exceeds this (seconds)

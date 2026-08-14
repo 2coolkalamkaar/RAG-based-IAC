@@ -32,6 +32,10 @@ def convert(input_path: str, output_path: str) -> None:
     seen_rules: set[str] = set()
 
     for result in results:
+        if not isinstance(result, dict):
+            print(f"Warning: Expected dict result, got {type(result)}. Skipping.")
+            continue
+
         description = result.get("description", "Unknown test")
         prompt = result.get("prompt", {})
         prompt_text = prompt.get("raw", "") if isinstance(prompt, dict) else str(prompt)
