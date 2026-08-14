@@ -18,3 +18,13 @@ test_sync.db
 streamlit.log
 scratch/
 *.log
+
+# Security scan outputs (generated in CI — never commit)
+garak_runs/
+*.garak
+trivy-results.sarif
+semgrep.sarif
+promptfoo-results.json
+promptfoo-report.html
+promptfoo.sarif
+

@@ -475,7 +475,7 @@ if selected_workflow == "HitL RAG" and not is_paused:
     if upload_mode:
         uploaded_files = st.file_uploader("Upload your .tf files", accept_multiple_files=True, type=["tf"])
         if uploaded_files:
-            tf_dict = {f.name: f.getvalue().decode("utf-8") for f in uploaded_files}
+            tf_dict = {os.path.basename(f.name): f.getvalue().decode("utf-8") for f in uploaded_files}
             if st.button("🚀 Ingest Files & Start Patching", use_container_width=True):
                 with st.spinner("Ingesting files and running security validations..."):
                     app.invoke({"upload_mode": True, "terraform_code": tf_dict}, config=config)

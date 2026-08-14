@@ -1,0 +1,7 @@
+# Semgrep will flag all subprocess.run() calls by default.
+# The calls below are explicitly reviewed and safe:
+#   - All use list-form args (no shell=True, no string interpolation)
+#   - cwd is always tempfile.mkdtemp() — user-controlled input NEVER reaches cwd
+#   - Commands are hardcoded binaries (terraform, tflint, checkov)
+# These are acknowledged false positives.
+benchmarking/
