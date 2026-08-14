@@ -21,11 +21,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Node.js (pre-installed on ubuntu-latest, pinned for stability) ──────
+      # ── Node.js (Required by Promptfoo and recent GitHub Actions) ──────
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       # ── Python env with project dependencies ──────────────────────────────
       - name: Install uv
