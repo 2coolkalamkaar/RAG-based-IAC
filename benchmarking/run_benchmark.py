@@ -4,7 +4,7 @@ import time
 import os
 from dotenv import load_dotenv
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
@@ -18,13 +18,11 @@ def load_app(module_name):
 load_dotenv()
 os.environ["LANGCHAIN_PROJECT"] = "Benchmarking RAGs"
 WORKFLOWS = {
-    "Basic": "agent_workflow",
-    "Standard RAG": "agent_workflow_rag",
-    "Advanced RAG": "agent_workflow_advanced_rag"
+    "Secure RAG": "workflows.agent_workflow_secure_rag"
 }
 
 # Setup the Judge
-eval_llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0.0)
+eval_llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.0)
 
 class EvalResult(BaseModel):
     score: int = Field(description="Score 1-5 for code quality")
@@ -37,11 +35,20 @@ eval_prompt = ChatPromptTemplate.from_messages([
 eval_chain = eval_prompt | eval_llm.with_structured_output(EvalResult)
 
 def run_benchmarks():
-    dataset_path = "benchmark_dataset.jsonl"
+    dataset_path = "benchmarking/benchmark_dataset.jsonl"
     with open(dataset_path, 'r') as f:
         dataset = [json.loads(line) for line in f if line.strip()]
+    
+    # ONLY run the last instruction (idx 2)
+    dataset = [dataset[2]]
 
     results = []
+    if os.path.exists("benchmarking/benchmark_results.json"):
+        try:
+            with open("benchmarking/benchmark_results.json", "r") as r:
+                results = json.load(r)
+        except Exception:
+            pass
 
     print("🚀 Starting Workflow Benchmarking...\n")
 
@@ -51,7 +58,8 @@ def run_benchmarks():
         print(f"=========================================")
         app = load_app(wf_module)
 
-        for i, data in enumerate(dataset):
+        for _, data in enumerate(dataset):
+            i = 2 # Hardcode the index to 2 for the JSON output since we sliced the dataset
             instruction = data['instruction']
             print(f"  [{i+1}/{len(dataset)}] Testing: {instruction[:50]}...")
 
@@ -87,6 +95,17 @@ def run_benchmarks():
 
                 duration = time.time() - start_time
                 
+                # Token tracking & Cost Estimation
+                input_tokens = 0
+                output_tokens = 0
+                for msg in final_state.get("messages", []):
+                    if hasattr(msg, "usage_metadata") and msg.usage_metadata:
+                        input_tokens += msg.usage_metadata.get("input_tokens", 0)
+                        output_tokens += msg.usage_metadata.get("output_tokens", 0)
+                
+                # Gemini Pricing (approx): $1.25 / 1M input, $5.00 / 1M output
+                cost_estimate = (input_tokens / 1_000_000) * 1.25 + (output_tokens / 1_000_000) * 5.00
+                
                 is_valid = final_state.get("is_valid", False)
                 retries = final_state.get("retry_count", 0)
                 
@@ -112,8 +131,11 @@ def run_benchmarks():
                 retries = 0
                 score = 1
                 ctx_len = 0
+                input_tokens = 0
+                output_tokens = 0
+                cost_estimate = 0.0
 
-            print(f"    -> Time: {duration:.1f}s | Valid: {is_valid} | Score: {score}/5 | Retries: {retries} | Context Len: {ctx_len}")
+            print(f"    -> Time: {duration:.1f}s | Valid: {is_valid} | Score: {score}/5 | Retries: {retries} | Tokens: {input_tokens+output_tokens} | Cost: ${cost_estimate:.4f}")
 
             results.append({
                 "workflow": wf_name,
@@ -122,14 +144,20 @@ def run_benchmarks():
                 "is_valid": is_valid,
                 "score": score,
                 "retries": retries,
-                "context_length": ctx_len
+                "context_length": ctx_len,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "cost_usd": round(cost_estimate, 4)
             })
+            
+            # Save incrementally
+            with open("benchmarking/benchmark_results.json", "w") as f:
+                json.dump(results, f, indent=2)
 
-            time.sleep(2) # rate limit
+            time.sleep(15) # rate limit
 
-    with open("benchmark_results.json", "w") as f:
-        json.dump(results, f, indent=2)
-    print("\\n✅ Benchmark complete! Saved to benchmark_results.json")
+    print("\\n✅ Benchmark complete! Saved to benchmarking/benchmark_results.json")
 
 if __name__ == "__main__":
     run_benchmarks()

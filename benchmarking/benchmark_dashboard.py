@@ -25,9 +25,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📊 AI Agent Workflow Benchmarks")
-st.markdown("A quantitative comparison between Basic, Standard RAG, and Advanced RAG Terraform Agents.")
+st.markdown("A quantitative comparison between Basic, Standard RAG, Advanced RAG, and Secure RAG Terraform Agents.")
 
-data_file = "benchmark_results.json"
+data_file = os.path.join(os.path.dirname(__file__), "benchmark_results.json")
 
 if not os.path.exists(data_file):
     st.warning("⚠️ Benchmark results not found! Please wait for `run_benchmark.py` to finish generating `benchmark_results.json`.")
@@ -48,7 +48,7 @@ summary_df = df.groupby('workflow').agg(
 ).reset_index()
 
 # Ensure standard order
-order_map = {"Basic": 1, "Standard RAG": 2, "Advanced RAG": 3}
+order_map = {"Basic": 1, "Standard RAG": 2, "Advanced RAG": 3, "Secure RAG": 4}
 summary_df['order'] = summary_df['workflow'].map(order_map)
 summary_df = summary_df.sort_values('order').drop(columns=['order'])
 
@@ -61,7 +61,7 @@ best_time = summary_df.loc[summary_df['avg_time'].idxmin()]
 col1.markdown(f'<div class="metric-box"><div class="metric-lbl">Highest Quality</div><div class="metric-val">{best_score["workflow"]}</div></div>', unsafe_allow_html=True)
 col2.markdown(f'<div class="metric-box"><div class="metric-lbl">Best Validity Rate</div><div class="metric-val">{best_valid["valid_rate"]:.0f}%</div></div>', unsafe_allow_html=True)
 col3.markdown(f'<div class="metric-box"><div class="metric-lbl">Fastest Execution</div><div class="metric-val">{best_time["avg_time"]:.1f}s</div></div>', unsafe_allow_html=True)
-col4.markdown(f'<div class="metric-box"><div class="metric-lbl">Total Scenarios</div><div class="metric-val">{len(df)/3:.0f}</div></div>', unsafe_allow_html=True)
+col4.markdown(f'<div class="metric-box"><div class="metric-lbl">Total Workflows</div><div class="metric-val">{len(summary_df):.0f}</div></div>', unsafe_allow_html=True)
 
 st.divider()
 
@@ -71,7 +71,7 @@ c1, c2 = st.columns(2)
 with c1:
     st.subheader("🏆 Code Quality Score (out of 5)")
     fig = px.bar(summary_df, x='workflow', y='avg_score', text='avg_score',
-                 color='workflow', color_discrete_sequence=['#484f58', '#1f6feb', '#2ea043'])
+                 color='workflow', color_discrete_sequence=['#484f58', '#1f6feb', '#2ea043', '#8957e5'])
     fig.update_traces(texttemplate='%{text:.2f}', textposition='outside')
     fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9", showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
@@ -79,7 +79,7 @@ with c1:
 with c2:
     st.subheader("⏱️ Average Execution Time (seconds)")
     fig = px.bar(summary_df, x='workflow', y='avg_time', text='avg_time',
-                 color='workflow', color_discrete_sequence=['#484f58', '#1f6feb', '#2ea043'])
+                 color='workflow', color_discrete_sequence=['#484f58', '#1f6feb', '#2ea043', '#8957e5'])
     fig.update_traces(texttemplate='%{text:.1f}s', textposition='outside')
     fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9", showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
@@ -89,7 +89,7 @@ c3, c4 = st.columns(2)
 with c3:
     st.subheader("🔧 Average Self-Healing Retries")
     fig = px.bar(summary_df, x='workflow', y='avg_retries', text='avg_retries',
-                 color='workflow', color_discrete_sequence=['#484f58', '#1f6feb', '#2ea043'])
+                 color='workflow', color_discrete_sequence=['#484f58', '#1f6feb', '#2ea043', '#8957e5'])
     fig.update_traces(texttemplate='%{text:.1f}', textposition='outside')
     fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9", showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
@@ -97,7 +97,7 @@ with c3:
 with c4:
     st.subheader("📚 Context Injection Size (Characters)")
     fig = px.bar(summary_df, x='workflow', y='avg_context', text='avg_context',
-                 color='workflow', color_discrete_sequence=['#484f58', '#1f6feb', '#2ea043'])
+                 color='workflow', color_discrete_sequence=['#484f58', '#1f6feb', '#2ea043', '#8957e5'])
     fig.update_traces(texttemplate='%{text:.0f}', textposition='outside')
     fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9", showlegend=False)
     st.plotly_chart(fig, use_container_width=True)

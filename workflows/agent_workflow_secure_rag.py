@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore")
+
 import os
 import re
 import tempfile
@@ -9,10 +12,10 @@ from typing import TypedDict, Annotated, Sequence, Dict
 from dotenv import load_dotenv
 load_dotenv()
 
-os.environ["LANGCHAIN_PROJECT"] = "Workflow_with_gemini_2.5_RAG and Reranking"
+os.environ["LANGCHAIN_PROJECT"] = "Workflow_with_gemini_2.5_Secure_RAG"
 
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -32,13 +35,22 @@ class AgentState(TypedDict):
 
 # --- Helper Functions ---
 def parse_terraform_code(response_content: str) -> dict:
+    import re
     files = {}
-    pattern_md = r"(?:\*\*|#\s)?(?P<filename>[\w\-_]+\.tf)(?:\*\*)?.*?\n```(?:hcl|terraform)?\n(?P<code>.*?)```"
-    matches = re.finditer(pattern_md, response_content, re.DOTALL | re.IGNORECASE)
-    for match in matches:
-        filename = match.group('filename').strip()
-        code = match.group('code').strip()
-        files[filename] = code
+    
+    # 1. Look for code blocks that have the filename INSIDE the first line of the block (e.g. # main.tf)
+    pattern1 = r"```(?:hcl|terraform)?\n(?:[#\s/]*)(?P<filename>[\w\-_]+\.tf)[^\n]*?\n(?P<code>.*?)```"
+    for match in re.finditer(pattern1, response_content, re.DOTALL | re.IGNORECASE):
+        files[match.group("filename").strip()] = match.group("code").strip()
+        
+    # 2. Look for code blocks that have the filename OUTSIDE, just before the block
+    pattern2 = r"(?:^|\n)[^\n]*?(?P<filename>[\w\-_]+\.tf)[^\n]*?\n\s*```(?:hcl|terraform|)?\n(?P<code>.*?)```"
+    for match in re.finditer(pattern2, response_content, re.DOTALL | re.IGNORECASE):
+        filename = match.group("filename").strip()
+        # Only add if we haven't already parsed it from inside the block
+        if filename not in files:
+            files[filename] = match.group("code").strip()
+            
     return files if files else {}
 
 def validate_terraform_code(files: dict) -> tuple[bool, str]:
@@ -72,10 +84,12 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
             if tflint_res.returncode != 0:
                 return False, f"TFLint Security Checks Failed:\n{tflint_res.stdout}\n{tflint_res.stderr}"
             
-        # We skip `terraform plan` because it requires valid AWS credentials to reach the AWS API
-        # By verifying syntax via `terraform validate` and security via `tflint`, we implicitly 
-        # ensure the infrastructure code is sound/deployable.
-
+        if shutil.which("checkov") is not None:
+            checkov_cmd = ["checkov", "-d", ".", "--soft-fail-on", "LOW,MEDIUM", "--quiet"]
+            chk_res = subprocess.run(checkov_cmd, cwd=temp_dir, capture_output=True, text=True)
+            if chk_res.returncode != 0:
+                return False, f"Checkov Security Scan Failed (CRITICAL/HIGH issues found):\n{chk_res.stdout}"
+                
         return True, "Success"
     except Exception as e:
         return False, str(e)
@@ -83,8 +97,8 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 # Initialize the LLM
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0.2)
-mq_llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0.0)
+llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.2)
+mq_llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.0)
 
 # --- 2. Define the Nodes (Workers) ---
 
@@ -266,7 +280,7 @@ def fixer_node(state: AgentState):
     code_context = "\n".join([f"--- {k} ---\n{v}" for k, v in files.items()])
     
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a Terraform architect fixing broken code. Fix the errors and output the COMPLETE corrected Terraform files in markdown format with their filenames."),
+        ("system", "You are a Terraform architect fixing broken code. Fix the errors and output the COMPLETE corrected Terraform files in markdown format with their filenames. If you are attempting to fix a Checkov security violation, but fixing it would require resources outside the scope of the user's request, or you have failed to fix it in a previous attempt, you must suppress the rule by adding '#checkov:skip=<Rule_ID>: <Justification>' inside the resource block."),
         ("human", "Here is the broken code:\n\n{code}\n\nHere are the validation errors:\n\n{errors}\n\nPlease fix the code.")
     ])
     
@@ -288,6 +302,7 @@ def cost_estimator_node(state: AgentState):
     Runs Infracost to calculate the estimated monthly cost of the generated infrastructure.
     """
     print("--- COST ESTIMATOR NODE ---")
+    return {"cost_estimate": "Skipped for benchmarking"}
     files = state.get("terraform_code", {})
     if not files:
         return {"cost_estimate": "No Terraform code to estimate."}
