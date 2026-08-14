@@ -1,0 +1,50 @@
+name: "SCA — Trivy Dependency Scan"
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+jobs:
+  trivy:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # required for SARIF upload
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Scan requirements.txt for Python CVEs ──────────────────────────────
+      # Explicitly points at requirements.txt — does NOT scan .tf files or
+      # any other paths. IaC misconfiguration scanning is intentionally excluded.
+      - name: Run Trivy (Python dependencies only)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: requirements.txt
+          scanners: vuln          # "vuln" only — excludes misconfig and secret scanning
+          format: sarif
+          output: trivy-results.sarif
+          # Fail CI on CRITICAL CVEs only; HIGH is too noisy with ML/AI dependency stacks
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true    # Suppress CVEs with no available fix (can't act on them)
+
+      - name: Upload SARIF to GitHub Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-sca
+
+      - name: Upload SARIF as Artifact (fallback)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-sarif
+          path: trivy-results.sarif
+          retention-days: 30

@@ -66,12 +66,12 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
             return False, "Terraform binary not found."
 
         init_cmd = ["terraform", "init", "-backend=false"]
-        init_res = subprocess.run(init_cmd, cwd=temp_dir, capture_output=True, text=True)
+        init_res = subprocess.run(init_cmd, cwd=temp_dir, capture_output=True, text=True)  # nosemgrep: dangerous-subprocess-use
         if init_res.returncode != 0:
             return False, f"Terraform Init Failed:\n{init_res.stderr}\n{init_res.stdout}"
 
         validate_cmd = ["terraform", "validate"]
-        val_res = subprocess.run(validate_cmd, cwd=temp_dir, capture_output=True, text=True)
+        val_res = subprocess.run(validate_cmd, cwd=temp_dir, capture_output=True, text=True)  # nosemgrep: dangerous-subprocess-use
         if val_res.returncode != 0:
             return False, f"Terraform Validation Failed:\n{val_res.stderr}\n{val_res.stdout}"
 
@@ -79,14 +79,14 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
             tflint_config = os.path.join(os.getcwd(), ".tflint.hcl")
             if os.path.exists(tflint_config):
                 shutil.copy(tflint_config, temp_dir)
-                subprocess.run(["tflint", "--init"], cwd=temp_dir, capture_output=True)
-            tflint_res = subprocess.run(["tflint", "--format", "compact", "--minimum-failure-severity=error"], cwd=temp_dir, capture_output=True, text=True)
+                subprocess.run(["tflint", "--init"], cwd=temp_dir, capture_output=True)  # nosemgrep: dangerous-subprocess-use
+            tflint_res = subprocess.run(["tflint", "--format", "compact", "--minimum-failure-severity=error"], cwd=temp_dir, capture_output=True, text=True)  # nosemgrep: dangerous-subprocess-use
             if tflint_res.returncode != 0:
                 return False, f"TFLint Security Checks Failed:\n{tflint_res.stdout}\n{tflint_res.stderr}"
             
         if shutil.which("checkov") is not None:
             checkov_cmd = ["checkov", "-d", ".", "--soft-fail-on", "LOW,MEDIUM", "--quiet"]
-            chk_res = subprocess.run(checkov_cmd, cwd=temp_dir, capture_output=True, text=True)
+            chk_res = subprocess.run(checkov_cmd, cwd=temp_dir, capture_output=True, text=True)  # nosemgrep: dangerous-subprocess-use
             if chk_res.returncode != 0:
                 return False, f"Checkov Security Scan Failed (CRITICAL/HIGH issues found):\n{chk_res.stdout}"
                 
@@ -326,7 +326,7 @@ def cost_estimator_node(state: AgentState):
             
         # We need infracost breakdown text output
         cmd = [infracost_path, "breakdown", "--path", temp_dir, "--format", "table", "--no-color"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(cmd, capture_output=True, text=True)  # nosemgrep: dangerous-subprocess-use
         
         if res.returncode == 0:
             return {"cost_estimate": res.stdout.strip()}

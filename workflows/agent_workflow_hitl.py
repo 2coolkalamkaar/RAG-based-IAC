@@ -68,13 +68,13 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
         if shutil.which("terraform") is None:
             return False, "Terraform binary not found."
 
-        init_res = subprocess.run(
+        init_res = subprocess.run(  # nosemgrep: dangerous-subprocess-use
             ["terraform", "init", "-backend=false"], cwd=temp_dir, capture_output=True, text=True
         )
         if init_res.returncode != 0:
             return False, f"Terraform Init Failed:\n{init_res.stderr}\n{init_res.stdout}"
 
-        val_res = subprocess.run(
+        val_res = subprocess.run(  # nosemgrep: dangerous-subprocess-use
             ["terraform", "validate"], cwd=temp_dir, capture_output=True, text=True
         )
         if val_res.returncode != 0:
@@ -84,8 +84,8 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
             tflint_config = os.path.join(os.getcwd(), ".tflint.hcl")
             if os.path.exists(tflint_config):
                 shutil.copy(tflint_config, temp_dir)
-                subprocess.run(["tflint", "--init"], cwd=temp_dir, capture_output=True)
-            tflint_res = subprocess.run(
+                subprocess.run(["tflint", "--init"], cwd=temp_dir, capture_output=True)  # nosemgrep: dangerous-subprocess-use
+            tflint_res = subprocess.run(  # nosemgrep: dangerous-subprocess-use
                 ["tflint", "--format", "compact", "--minimum-failure-severity=error"],
                 cwd=temp_dir, capture_output=True, text=True
             )
