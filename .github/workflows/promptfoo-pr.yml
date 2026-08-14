@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write           # required for Workload Identity Federation
       pull-requests: write      # needed to post PR comment with results
       security-events: write
 
@@ -41,13 +42,12 @@ jobs:
       - name: Install Python dependencies
         run: uv pip install --system -r requirements.txt
 
-      # ── Google Cloud credentials (write JSON key from secret) ─────────────
+      # ── Google Cloud credentials via Workload Identity Federation ─────────────
       - name: Authenticate to Google Cloud
-        run: |
-          echo "$GCP_CREDENTIALS_B64" | base64 --decode > /tmp/gcp-key.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-key.json" >> $GITHUB_ENV
-        env:
-          GCP_CREDENTIALS_B64: ${{ secrets.GCP_CREDENTIALS_B64 }}
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
       # ── Run Promptfoo evaluation ───────────────────────────────────────────
       - name: Run Promptfoo compliance tests
