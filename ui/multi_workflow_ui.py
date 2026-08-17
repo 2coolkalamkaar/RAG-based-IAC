@@ -197,13 +197,14 @@ WORKFLOWS = {
     "Advanced RAG": {
         "module": "workflows.agent_workflow_advanced_rag",
         "project_name": "Workflow_with_gemini_2.5_RAG and Reranking",
-        "description": "Persistent Advanced RAG: MultiQuery Retriever → Architect → Validator ↔ Fixer → Cost Estimator",
+        "description": "Persistent Advanced RAG: MultiQuery Retriever → Architect → Validator ↔ Fixer → Cost Estimator → Trust Assessor",
         "stages": [
-            ("Retriever_Node", "🔍", "Retriever", "MultiQuery + Rerank"),
-            ("Architect_Node", "🏗️", "Architect", "Terraform Blueprint"),
-            ("Validator_Node", "🔎", "Validator", "Syntax + Security"),
-            ("Fixer_Node", "🔧", "Fixer", "Self-Healing"),
-            ("Cost_Estimator_Node", "💰", "Cost Est.", "Infracost Analysis"),
+            ("Retriever_Node",      "🔍", "Retriever",  "MultiQuery + Rerank"),
+            ("Architect_Node",      "🏗️", "Architect",  "Terraform Blueprint"),
+            ("Validator_Node",      "🔎", "Validator",  "Syntax + Security"),
+            ("Fixer_Node",          "🔧", "Fixer",      "Self-Healing"),
+            ("Cost_Estimator_Node", "💰", "Cost Est.",  "Infracost Analysis"),
+            ("Trust_Assessor_Node", "🛡️", "Trust",      "Confidence Score"),
         ],
         "has_config": True,
         "uses_sqlite": True
@@ -218,6 +219,7 @@ WORKFLOWS = {
             ("Validator_Node", "🛡️", "Validator", "Checkov + TFLint"),
             ("Fixer_Node", "🔧", "Fixer", "Security Healer"),
             ("Cost_Estimator_Node", "💰", "Cost Est.", "Infracost Analysis"),
+            ("Trust_Assessor_Node", "🛡️", "Trust", "4-Factor Trust Score"),
         ],
         "has_config": True,
         "uses_sqlite": True
@@ -337,6 +339,96 @@ def render_final_state(state_values: dict, start_time: float):
         st.error("⚠️ **Validation Failed** — Max retries reached. Review diagnostics below.")
         with st.expander("🔬 Diagnostics & Error Log"):
             st.code(state_values.get("validation_errors", "No errors logged."), language="text")
+
+    # ── Trust Score Display ─────────────────────────────────────────────────────────
+    trust_label       = state_values.get("trust_label",       "")
+    trust_score_v     = state_values.get("trust_score",       None)
+    trust_factors     = state_values.get("trust_factors",     {})
+    trust_explanation = state_values.get("trust_explanation", "")
+
+    if trust_label and trust_score_v is not None:
+        score_pct = int(round(trust_score_v * 100))
+
+        # Colour palette based on tier
+        if "High Trust" in trust_label and "Low" not in trust_label:
+            border_c, bg_c, bar_c = "#2ea043", "#0a1f10", "#3fb950"
+        elif "Review" in trust_label:
+            border_c, bg_c, bar_c = "#d29922", "#1f1800", "#e3b341"
+        else:
+            border_c, bg_c, bar_c = "#da3633", "#1f0a0a", "#f85149"
+
+        # Factor metadata: key -> (display label, weight %)
+        if "checkov_passed" in trust_factors:
+            FACTOR_META = {
+                "retrieval_similarity": ("📚 Retrieval Similarity", 25),
+                "reranker_score_norm":  ("🎯 Reranker Confidence",  25),
+                "validation_passed":    ("✅ Validation Pass",       30),
+                "checkov_passed":       ("🛡️ Security Scan",         20),
+            }
+        else:
+            FACTOR_META = {
+                "retrieval_similarity": ("📚 Retrieval Similarity", 35),
+                "reranker_score_norm":  ("🎯 Reranker Confidence",  35),
+                "validation_passed":    ("✅ Validation Pass",       30),
+            }
+
+        # Build bars using string concat — NO leading whitespace (prevents Markdown code-block rendering)
+        bars_html = ""
+        for fkey, (flabel, fweight) in FACTOR_META.items():
+            val = trust_factors.get(fkey, 0.0)
+            pct = int(round(val * 100))
+            bars_html += (
+                f'<div style="margin:6px 0;">'
+                f'<div style="display:flex;justify-content:space-between;font-size:0.76rem;color:#c9d1d9;margin-bottom:3px;">'
+                f'<span>{flabel}<span style="color:#484f58;font-size:0.68rem;"> (weight {fweight}%)</span></span>'
+                f'<span style="font-weight:700;color:{bar_c};">{pct}%</span>'
+                f'</div>'
+                f'<div style="background:#21262d;border-radius:4px;height:5px;">'
+                f'<div style="background:{bar_c};width:{pct}%;height:100%;border-radius:4px;"></div>'
+                f'</div>'
+                f'</div>'
+            )
+
+        raw_rnk     = trust_factors.get("reranker_score_raw", None)
+        raw_rnk_str = f"{raw_rnk:.3f}" if isinstance(raw_rnk, float) else "N/A"
+        retries_v   = int(trust_factors.get("retry_count", 0.0))
+
+        # Explanation block (rule-based, zero latency)
+        explanation_html = ""
+        if trust_explanation:
+            explanation_html = (
+                f'<div style="margin-top:14px;padding:10px 12px;background:rgba(0,0,0,0.2);'
+                f'border-left:3px solid {bar_c};border-radius:4px;">'
+                f'<div style="font-size:0.7rem;font-weight:600;color:{bar_c};text-transform:uppercase;'
+                f'letter-spacing:0.06em;margin-bottom:5px;">Why this score?</div>'
+                f'<div style="font-size:0.76rem;color:#c9d1d9;line-height:1.6;">{trust_explanation}</div>'
+                f'</div>'
+            )
+
+        # Assemble card as a flat single string — use st.html() to bypass Markdown parsing
+        card_html = (
+            f'<div style="background:{bg_c};border:1px solid {border_c};border-radius:14px;'
+            f'padding:18px 22px;margin:1.2rem 0;">'
+            f'<div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:wrap;">'
+            f'<div style="text-align:center;min-width:90px;padding-top:4px;">'
+            f'<div style="font-size:2.6rem;font-weight:800;color:{bar_c};line-height:1;">{score_pct}%</div>'
+            f'<div style="font-size:0.62rem;color:#7d8590;text-transform:uppercase;'
+            f'letter-spacing:0.08em;margin-top:4px;">Trust Score</div>'
+            f'</div>'
+            f'<div style="flex:1;min-width:240px;">'
+            f'<div style="font-size:1.05rem;font-weight:700;color:{bar_c};margin-bottom:12px;">{trust_label}</div>'
+            f'{bars_html}'
+            f'{explanation_html}'
+            f'<div style="margin-top:10px;font-size:0.7rem;color:#484f58;">'
+            f'Raw reranker logit:&nbsp;<code style="color:#7d8590;">{raw_rnk_str}</code>'
+            f'&nbsp;&middot;&nbsp;'
+            f'Self-heal retries:&nbsp;<code style="color:#7d8590;">{retries_v}</code>'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+        )
+        st.html(card_html)
 
     tab_labels = ["🧠 Architect Notes"]
     if files: tab_labels.append(f"📂 Terraform Code ({len(files)} files)")
@@ -557,8 +649,14 @@ else:
             if "RAG" in selected_workflow:
                 initial_state["retrieved_context"] = ""
                 if selected_workflow == "Advanced RAG":
-                    initial_state["citations"] = []
-                    initial_state["cost_estimate"] = ""
+                    initial_state["citations"]                 = []
+                    initial_state["cost_estimate"]             = ""
+                    initial_state["avg_retrieval_similarity"]  = 0.0
+                    initial_state["avg_reranker_score"]        = 0.0
+                    initial_state["trust_score"]               = 0.0
+                    initial_state["trust_label"]               = ""
+                    initial_state["trust_factors"]             = {}
+                    initial_state["trust_explanation"]         = ""
 
             final_state_values = initial_state.copy()
             pipeline_error = None
@@ -575,9 +673,10 @@ else:
                             config["callbacks"].append(cb)
                         else:
                             config["callbacks"] = [cb]
+                        config["run_name"] = proj_name
                         stream_generator = app.stream(initial_state, config=config)
                     else:
-                        stream_generator = app.stream(initial_state, config={"callbacks": [cb]})
+                        stream_generator = app.stream(initial_state, config={"callbacks": [cb], "run_name": proj_name})
 
                     for event in stream_generator:
                         for node_name, state_update in event.items():
@@ -627,6 +726,17 @@ else:
                                 log("💰 Cost Estimator: Running analysis…", "info")
                                 update_ui()
                                 log("✅ Cost Estimator: Analysis complete.", "ok")
+
+                            elif node_name == "Trust_Assessor_Node":
+                                stage_states["Trust_Assessor_Node"] = "running"
+                                log("🛡️  Trust Assessor: Computing confidence score…", "info")
+                                update_ui()
+                                t_label = state_update.get("trust_label", "")
+                                t_score = state_update.get("trust_score", 0.0)
+                                if t_label:
+                                    log(f"✅ Trust Assessor: {t_label} ({int(t_score*100)}%)", "ok")
+                                else:
+                                    log("✅ Trust Assessor: Score computed.", "ok")
 
                             elif node_name == "Upload_Entry_Node":
                                 stage_states["Upload_Entry_Node"] = "running"

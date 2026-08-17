@@ -7,6 +7,7 @@ import tempfile
 import shutil
 import subprocess
 import operator
+import math
 from typing import TypedDict, Annotated, Sequence, Dict
 
 from dotenv import load_dotenv
@@ -32,6 +33,13 @@ class AgentState(TypedDict):
     is_valid: bool
     retry_count: int
     cost_estimate: str
+    # ── Trust Score fields ───────────────────────────────────────────
+    avg_retrieval_similarity:  float
+    avg_reranker_score:        float
+    trust_score:               float
+    trust_label:               str
+    trust_factors:             Dict[str, float]
+    trust_explanation:         str
 
 # --- Helper Functions ---
 def parse_terraform_code(response_content: str) -> dict:
@@ -185,10 +193,36 @@ def retriever_node(state: AgentState):
                 citations.append(src)
                 
         print(f" Retrieved {len(docs)} highly accurate documents (eval data excluded).")
-        return {"retrieved_context": context, "citations": citations}
+        
+        # ── Trust Signal 1: Reranker scores (already in metadata — 0ms) ──────────
+        avg_reranker = (
+            sum(d.metadata.get("relevance_score", 0.0) for d in docs) / len(docs)
+        ) if docs else 0.0
+        
+        # ── Trust Signal 2: Base cosine similarity (one local ChromaDB call) ─────
+        avg_similarity = 0.0
+        if docs:
+            try:
+                raw_docs_with_scores = vector_store.similarity_search_with_relevance_scores(user_request, k=len(docs))
+                if raw_docs_with_scores:
+                    avg_similarity = sum(score for _, score in raw_docs_with_scores) / len(raw_docs_with_scores)
+            except Exception:
+                pass  # Non-fatal — trust assessor handles 0.0 gracefully
+                
+        return {
+            "retrieved_context": context, 
+            "citations": citations,
+            "avg_retrieval_similarity": round(avg_similarity, 4),
+            "avg_reranker_score":       round(avg_reranker,   4),
+        }
     except Exception as e:
         print(f"Retrieval error: {e}. Proceeding without context.")
-        return {"retrieved_context": "", "citations": []}
+        return {
+            "retrieved_context": "", 
+            "citations": [],
+            "avg_retrieval_similarity": 0.0,
+            "avg_reranker_score":       0.0,
+        }
 
 def architect_node(state: AgentState):
     print("--- ARCHITECT NODE ---")
@@ -297,6 +331,125 @@ def fixer_node(state: AgentState):
         "messages": [AIMessage(content=response.content, name="Fixer_Node")]
     }
 
+def _build_trust_explanation(
+    retrieval_sim: float,
+    reranker_norm: float,
+    is_valid: bool,
+    retry_count: int,
+    checkov_passed: float,
+) -> str:
+    """
+    Generates a concise, rule-based natural-language explanation of the trust score (4-factor).
+    """
+    parts = []
+
+    # ── Retrieval quality ───────────────────────────────────────────────────
+    r_pct = int(retrieval_sim * 100)
+    if retrieval_sim >= 0.75:
+        parts.append(f"Strong knowledge base coverage (retrieval similarity: {r_pct}%) grounds the Architect in real provider documentation.")
+    elif retrieval_sim >= 0.50:
+        parts.append(f"Moderate knowledge base coverage (retrieval similarity: {r_pct}%). Some constructs may rely on the Architect's parametric knowledge.")
+    else:
+        parts.append(f"Weak knowledge base coverage (retrieval similarity: {r_pct}%), reducing grounding quality.")
+
+    # ── Reranker confidence ─────────────────────────────────────────────────
+    rr_pct = int(reranker_norm * 100)
+    if reranker_norm >= 0.75:
+        parts.append(f"The reranker confirmed high relevance of the injected context ({rr_pct}% confidence).")
+    elif reranker_norm >= 0.50:
+        parts.append(f"The reranker scored retrieved sources at moderate confidence ({rr_pct}%).")
+    else:
+        parts.append(f"The reranker scored retrieved sources at low confidence ({rr_pct}%), suggesting weakly aligned context.")
+
+    # ── Validation / retries ────────────────────────────────────────────────
+    if not is_valid:
+        parts.append("Validation failed after the maximum number of self-healing attempts. Manual review is required.")
+    elif retry_count >= 3:
+        parts.append(f"The code required {retry_count} self-healing fix attempts before passing validation, reducing confidence in completeness.")
+    elif retry_count >= 1:
+        parts.append(f"The code required {retry_count} fix attempt(s) before passing validation — minor issues were automatically corrected.")
+    else:
+        parts.append("The code passed syntax validation on the first attempt.")
+
+    # ── Security Scan (Checkov) ─────────────────────────────────────────────
+    if not is_valid and checkov_passed == 0.0:
+        parts.append("CRITICAL: The code failed the Checkov Security Scan. Hardcoded secrets, overly permissive IAM, or insecure defaults were detected.")
+    elif is_valid:
+        parts.append("The generated code passed the Checkov Security Scan with no critical or high severity violations.")
+
+    return " ".join(parts)
+
+
+def trust_assessor_node(state: AgentState):
+    """
+    Computes a 4-factor weighted trust score for Secure RAG.
+    """
+    print("--- 🛡️  TRUST ASSESSOR NODE ---")
+
+    retrieval_sim  = state.get("avg_retrieval_similarity", 0.0)
+    reranker_raw   = state.get("avg_reranker_score",       0.0)
+    is_valid       = state.get("is_valid",    False)
+    retry_count    = state.get("retry_count", 0)
+    val_errors     = state.get("validation_errors", "")
+
+    # Normalise cross-encoder logit → 0–1 via sigmoid
+    reranker_norm = 1.0 / (1.0 + math.exp(-reranker_raw)) if reranker_raw != 0 else 0.5
+
+    validation_score = 1.0 if is_valid else 0.0
+    
+    # 4th Factor: Checkov
+    checkov_passed = 1.0
+    if not is_valid and "Checkov Security Scan Failed" in val_errors:
+        checkov_passed = 0.0
+
+    # 4-factor weighted formula
+    score = (
+        0.25 * retrieval_sim
+      + 0.25 * reranker_norm
+      + 0.30 * validation_score
+      + 0.20 * checkov_passed
+    )
+    score = round(min(max(score, 0.0), 1.0), 3)
+
+    # Hard override: validation failure caps trust
+    if not is_valid:
+        score = min(score, 0.40)
+
+    # Tier assignment
+    if score >= 0.85:
+        badge, tier = "🟢", "High Trust"
+    elif score >= 0.60:
+        badge, tier = "🟡", "Review Recommended"
+    else:
+        badge, tier = "🔴", "Low Trust — Manual Check Required"
+
+    # Rule-based label override for validation failure
+    if not is_valid:
+        badge, tier = "🔴", "Low Trust — Validation Failed"
+
+    label = f"{badge} {tier}"
+    factors = {
+        "retrieval_similarity": round(retrieval_sim,   3),
+        "reranker_score_norm":  round(reranker_norm,   3),
+        "reranker_score_raw":   round(reranker_raw,    3),
+        "validation_passed":    validation_score,
+        "checkov_passed":       checkov_passed,
+        "retry_count":          float(retry_count),
+    }
+
+    explanation = _build_trust_explanation(
+        retrieval_sim, reranker_norm, is_valid, retry_count, checkov_passed
+    )
+
+    print(f"   Score: {score:.3f}  →  {label}")
+    return {
+        "trust_score":       score,
+        "trust_label":       label,
+        "trust_factors":     factors,
+        "trust_explanation": explanation,
+    }
+
+
 def cost_estimator_node(state: AgentState):
     """
     Runs Infracost to calculate the estimated monthly cost of the generated infrastructure.
@@ -345,8 +498,8 @@ def routing_edge(state: AgentState):
         print(" Code is valid! Routing to Cost Estimator.")
         return "cost_estimator"
     if state.get("retry_count", 0) >= MAX_RETRIES:
-        print(" Max retries reached. Finishing workflow with errors.")
-        return "end"
+        print(" Max retries reached. Routing to Trust Assessor.")
+        return "trust_assessor"
     print(" Validation failed. Routing to Fixer Node.")
     return "fixer"
 
@@ -357,14 +510,16 @@ workflow.add_node("Architect_Node", architect_node)
 workflow.add_node("Validator_Node", validator_node)
 workflow.add_node("Fixer_Node", fixer_node)
 workflow.add_node("Cost_Estimator_Node", cost_estimator_node)
+workflow.add_node("Trust_Assessor_Node", trust_assessor_node)
 
 # Flow: Start -> Retriever -> Architect -> Validator <-> Fixer
 workflow.add_edge(START, "Retriever_Node")
 workflow.add_edge("Retriever_Node", "Architect_Node")
 workflow.add_edge("Architect_Node", "Validator_Node")
-workflow.add_conditional_edges("Validator_Node", routing_edge, {"end": END, "fixer": "Fixer_Node", "cost_estimator": "Cost_Estimator_Node"})
+workflow.add_conditional_edges("Validator_Node", routing_edge, {"trust_assessor": "Trust_Assessor_Node", "fixer": "Fixer_Node", "cost_estimator": "Cost_Estimator_Node"})
 workflow.add_edge("Fixer_Node", "Validator_Node")
-workflow.add_edge("Cost_Estimator_Node", END)
+workflow.add_edge("Cost_Estimator_Node", "Trust_Assessor_Node")
+workflow.add_edge("Trust_Assessor_Node", END)
 
 import os
 db_path = os.path.join(os.getcwd(), "state.db")
@@ -390,7 +545,13 @@ if __name__ == "__main__":
         "validation_errors": "",
         "is_valid": False,
         "retry_count": 0,
-        "cost_estimate": ""
+        "cost_estimate": "",
+        "avg_retrieval_similarity": 0.0,
+        "avg_reranker_score":       0.0,
+        "trust_score":              0.0,
+        "trust_label":              "",
+        "trust_factors":            {},
+        "trust_explanation":        ""
     }
     
     import uuid
