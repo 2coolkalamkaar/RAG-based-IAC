@@ -1,6 +1,6 @@
 # 🧠 RAG-Based Infrastructure-as-Code Agent
 
-> **An enterprise-grade, self-healing agentic pipeline that converts plain-English infrastructure requests into production-ready, validated, and security-hardened Terraform code — powered by Google Gemini, LangGraph, and a Hybrid RAG architecture.**
+> **Self-healing agentic RAG pipeline for Terraform generation — grounding, validation, and human-in-the-loop trust gates.**
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/LangGraph-1.0-orange?logo=langchain)](https://langchain-ai.github.io/langgraph/)
