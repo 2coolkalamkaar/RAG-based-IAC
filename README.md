@@ -1,6 +1,8 @@
 # 🧠 RAG-Based Infrastructure-as-Code Agent
 
 > **Self-healing agentic RAG pipeline for Terraform generation — grounding, validation, and human-in-the-loop trust gates.**
+>
+> This system converts plain-English infrastructure requests into production-ready, security-hardened Terraform code using a four-tier LangGraph agentic architecture powered by Google Gemini 2.5 Pro. It grounds every generation in a 15,691-chunk ChromaDB knowledge base of official AWS provider docs, then autonomously validates, self-heals, and security-scans the output via Checkov and TFLint — all before a human ever sees it. A `Trust_Assessor_Node` computes a real-time confidence score across retrieval quality, reranker precision, and validation pass rate, feeding directly into a Human-in-the-Loop gate for final approval.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/LangGraph-1.0-orange?logo=langchain)](https://langchain-ai.github.io/langgraph/)
