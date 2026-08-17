@@ -3,6 +3,7 @@ import uuid
 import time
 import os
 from dotenv import load_dotenv
+from langsmith import traceable
 
 from langchain_google_vertexai import ChatVertexAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -80,49 +81,51 @@ def run_benchmarks():
                 initial_state["citations"] = []
                 initial_state["cost_estimate"] = ""
 
-            start_time = time.time()
-            try:
-                # Basic workflow does not require config
+            @traceable(name=f"{wf_name} Benchmark", project_name="Benchmarking RAGs")
+            def execute_workflow_and_judge(initial_state, config, instruction):
                 if wf_name == "Basic":
-                    # For basic we have to accumulate the stream to get final state
-                    final_state = initial_state.copy()
+                    state_copy = initial_state.copy()
                     for event in app.stream(initial_state):
                         for k, v in event.items():
-                            final_state.update(v)
+                            state_copy.update(v)
+                    final_state = state_copy
                 else:
                     app.invoke(initial_state, config=config)
                     final_state = app.get_state(config).values
 
-                duration = time.time() - start_time
-                
                 # Token tracking & Cost Estimation
-                input_tokens = 0
-                output_tokens = 0
+                input_toks = 0
+                output_toks = 0
                 for msg in final_state.get("messages", []):
                     if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-                        input_tokens += msg.usage_metadata.get("input_tokens", 0)
-                        output_tokens += msg.usage_metadata.get("output_tokens", 0)
+                        input_toks += msg.usage_metadata.get("input_tokens", 0)
+                        output_toks += msg.usage_metadata.get("output_tokens", 0)
                 
-                # Gemini Pricing (approx): $1.25 / 1M input, $5.00 / 1M output
-                cost_estimate = (input_tokens / 1_000_000) * 1.25 + (output_tokens / 1_000_000) * 5.00
+                cost_est = (input_toks / 1_000_000) * 1.25 + (output_toks / 1_000_000) * 5.00
                 
-                is_valid = final_state.get("is_valid", False)
-                retries = final_state.get("retry_count", 0)
+                is_val = final_state.get("is_valid", False)
+                ret = final_state.get("retry_count", 0)
                 
                 files = final_state.get("terraform_code", {})
                 gen_code = "\\n".join([f"--- {k} ---\\n{v}" for k,v in files.items()])
                 if not gen_code: gen_code = "NO CODE GENERATED"
 
-                # LLM Judge
                 try:
-                    judge_res = eval_chain.invoke({"instruction": instruction, "generated_code": gen_code})
-                    score = judge_res.score
+                    judge_result = eval_chain.invoke({"instruction": instruction, "generated_code": gen_code})
+                    eval_score = judge_result.score
                 except Exception as e:
                     print(f"    ⚠️ Judge failed: {e}")
-                    score = 1
+                    eval_score = 1
                 
-                # Context chars for token proxy
                 ctx_len = len(final_state.get("retrieved_context", ""))
+                return final_state, input_toks, output_toks, cost_est, is_val, ret, eval_score, ctx_len
+
+            start_time = time.time()
+            try:
+                final_state, input_tokens, output_tokens, cost_estimate, is_valid, retries, score, ctx_len = execute_workflow_and_judge(
+                    initial_state, config, instruction
+                )
+                duration = time.time() - start_time
 
             except Exception as e:
                 print(f"    ❌ Workflow Error: {e}")

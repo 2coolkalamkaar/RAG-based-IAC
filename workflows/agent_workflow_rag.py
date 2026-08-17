@@ -113,7 +113,7 @@ def retriever_node(state: AgentState):
             return {"retrieved_context": ""}
             
         embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embedding_model)
+        vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embedding_model, collection_metadata={"hnsw:space": "cosine"})
         
         docs = vector_store.similarity_search(user_request, k=6)
         context = "\n\n".join([doc.page_content for doc in docs])

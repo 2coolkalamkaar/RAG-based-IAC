@@ -254,7 +254,7 @@ def run_etl(full_rebuild: bool = False, dry_run: bool = False, skip_pull: bool =
 
     # Step 4: Open (or create) Chroma vector store
     DB_PATH.mkdir(parents=True, exist_ok=True)
-    vector_store = Chroma(persist_directory=str(DB_PATH), embedding_function=embeddings)
+    vector_store = Chroma(persist_directory=str(DB_PATH), embedding_function=embeddings, collection_metadata={"hnsw:space": "cosine"})
     print(f"🗄️  Vector store opened: {DB_PATH}")
 
     # Step 5: Load manifest and compute diff

@@ -130,7 +130,7 @@ def retriever_node(state: AgentState):
             return {"retrieved_context": "", "citations": []}
             
         embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embedding_model)
+        vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embedding_model, collection_metadata={"hnsw:space": "cosine"})
         
         # 1. Base Retriever (Wide net: Top 12 — slightly over-fetch to compensate for post-filter)
         # NOTE: We do NOT use a Chroma $ne filter here. Chroma's $ne does a full
@@ -159,11 +159,22 @@ def retriever_node(state: AgentState):
             from langchain_classic.retrievers.document_compressors.cross_encoder_rerank import CrossEncoderReranker
             from langchain_community.cross_encoders import HuggingFaceCrossEncoder
             from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
+            import operator
             
-            print("    Booting up CrossEncoder Reranker...")
-            # ms-marco is the standard for fast semantic reranking based on sentence-transformers
+            class ScorePreservingReranker(CrossEncoderReranker):
+                def compress_documents(self, documents, query, callbacks=None):
+                    scores = self.model.score([(query, doc.page_content) for doc in documents])
+                    docs_with_scores = list(zip(documents, scores, strict=False))
+                    result = sorted(docs_with_scores, key=operator.itemgetter(1), reverse=True)
+                    final_docs = []
+                    for doc, score in result[:self.top_n]:
+                        doc.metadata["relevance_score"] = float(score)
+                        final_docs.append(doc)
+                    return final_docs
+
+            print("    Booting up Score-Preserving CrossEncoder Reranker...")
             cross_encoder = HuggingFaceCrossEncoder(model_name="cross-encoder/ms-marco-MiniLM-L-6-v2")
-            compressor = CrossEncoderReranker(model=cross_encoder, top_n=5)
+            compressor = ScorePreservingReranker(model=cross_encoder, top_n=5)
             
             retriever_pipeline = ContextualCompressionRetriever(
                 base_compressor=compressor, 

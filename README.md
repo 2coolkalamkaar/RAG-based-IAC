@@ -40,8 +40,8 @@ User Request (Natural Language)
 ┌───────────────────────────────────────────────────────┐
 │                  RETRIEVER NODE                        │
 │  MultiQuery Expansion → ChromaDB Search               │
-│  → CrossEncoder Reranking (13,779 chunks indexed)     │
-│  Knowledge base: 1,584 AWS Terraform Provider docs    │
+│  → CrossEncoder Reranking (15,691 chunks indexed)     │
+│  Knowledge base: 1,696 AWS Terraform Provider docs    │
 └────────────────────────┬──────────────────────────────┘
                          │  Grounded Context + Citations
                          ▼
@@ -67,6 +67,13 @@ User Request (Natural Language)
            │          └──────────┬───────────┘
            │                     │ Re-validates
            ▼                     ▼
+┌───────────────────────────────────────────────────────┐
+│              TRUST ASSESSOR NODE                       │
+│  Computes 0-100% Trust Score & qualitative tier based │
+│  on retrieval similarity, reranker, & Checkov scans   │
+└────────────────────────┬──────────────────────────────┘
+                         │
+                         ▼
 ┌───────────────────────────────────────────────────────┐
 │              HUMAN-IN-THE-LOOP NODE  (HitL tier)      │
 │  LangGraph interrupt() → UI Approval Panel            │
@@ -110,14 +117,15 @@ A 12-scenario automated benchmark was run across all four workflow tiers using t
 
 | Feature | Description |
 |---|---|
-| **Hybrid RAG** | MultiQuery retriever expands single queries into 3 sub-queries, CrossEncoder reranker re-scores retrieved chunks for precision |
+| **Hybrid RAG** | MultiQuery retriever expands single queries into 3 sub-queries, custom `ScorePreservingReranker` computes CrossEncoder logits for precision |
 | **Self-Healing Loop** | Autonomous `validate → fix → validate` cycle, up to 3 retries, with the full validation error passed back as context |
 | **Shift-Left Security** | Checkov CIS AWS benchmark + TFLint on every generated file, before any human review |
+| **Trust Score Assessment** | Dedicated `Trust_Assessor_Node` computes a 0-100% confidence score and qualitative tier label based on Cosine Similarity, reranker confidence, and security pass rates, generating a natural language explanation |
 | **Human-in-the-Loop** | LangGraph `interrupt()` pauses execution for human review and approval, with full state persistence via SQLite |
 | **Surgical Patcher** | Dedicated `Patcher_Node` applies natural-language change requests as targeted diffs — no full pipeline restart |
 | **SRE Upload Mode** | SREs can upload existing `.tf` files directly, bypassing generation, to leverage the validation and patching nodes for legacy infrastructure |
 | **Persistent Memory** | `SqliteSaver` checkpointer preserves full conversation state — threads are resumable across browser sessions |
-| **ETL Pipeline** | Incremental, SHA-256 hash-based sync with the official `terraform-provider-aws` documentation (1,584 docs → 13,779 chunks) |
+| **ETL Pipeline** | Incremental, SHA-256 hash-based sync with the official `terraform-provider-aws` documentation (1,696 docs → 15,691 chunks) |
 | **Multi-Workflow UI** | Single Streamlit interface supports all four workflow tiers with a live pipeline stage visualiser and log terminal |
 | **Benchmark Suite** | 12-scenario automated evaluation harness with a Plotly dashboard for results visualisation |
 
@@ -240,7 +248,7 @@ PYTHONPATH=. venv/bin/python data/etl_pipeline.py
 PYTHONPATH=. venv/bin/python data/etl_pipeline.py
 ```
 
-> **What gets indexed:** 1,584 AWS resource docs → 13,779 semantic chunks at `all-MiniLM-L6-v2` embeddings.
+> **What gets indexed:** 1,696 AWS resource docs → 15,691 semantic chunks at `all-MiniLM-L6-v2` embeddings (using Cosine Similarity).
 
 ### 4. Run the Multi-Workflow UI
 

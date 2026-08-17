@@ -6,6 +6,7 @@ import re
 import tempfile
 import shutil
 import subprocess
+import math
 import operator
 import sqlite3
 from typing import TypedDict, Annotated, Sequence, Dict, Optional
@@ -38,6 +39,13 @@ class AgentState(TypedDict):
     hitl_action:       str   # "approve" | "patch"
     patch_request:     str   # Any natural language change the human wants
     upload_mode:       bool  # True = SRE uploaded files, skip Retriever+Architect
+    # ── Trust Score fields ───────────────────────────────────────────
+    avg_retrieval_similarity:  float
+    avg_reranker_score:        float
+    trust_score:               float
+    trust_label:               str
+    trust_factors:             Dict[str, float]
+    trust_explanation:         str
 
 
 # ─────────────────────────────────────────────────
@@ -138,7 +146,7 @@ def retriever_node(state: AgentState):
             return {"retrieved_context": "", "citations": []}
 
         embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embedding_model)
+        vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embedding_model, collection_metadata={"hnsw:space": "cosine"})
         base_retriever = vector_store.as_retriever(search_kwargs={"k": 12})
 
         try:
@@ -157,9 +165,22 @@ def retriever_node(state: AgentState):
             from langchain_classic.retrievers.document_compressors.cross_encoder_rerank import CrossEncoderReranker
             from langchain_community.cross_encoders import HuggingFaceCrossEncoder
             from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
-            print("    Booting up CrossEncoder Reranker...")
+            import operator
+            
+            class ScorePreservingReranker(CrossEncoderReranker):
+                def compress_documents(self, documents, query, callbacks=None):
+                    scores = self.model.score([(query, doc.page_content) for doc in documents])
+                    docs_with_scores = list(zip(documents, scores, strict=False))
+                    result = sorted(docs_with_scores, key=operator.itemgetter(1), reverse=True)
+                    final_docs = []
+                    for doc, score in result[:self.top_n]:
+                        doc.metadata["relevance_score"] = float(score)
+                        final_docs.append(doc)
+                    return final_docs
+
+            print("    Booting up Score-Preserving CrossEncoder Reranker...")
             cross_encoder = HuggingFaceCrossEncoder(model_name="cross-encoder/ms-marco-MiniLM-L-6-v2")
-            compressor = CrossEncoderReranker(model=cross_encoder, top_n=5)
+            compressor = ScorePreservingReranker(model=cross_encoder, top_n=5)
             retriever_pipeline = ContextualCompressionRetriever(
                 base_compressor=compressor, base_retriever=mq_retriever
             )
@@ -175,14 +196,36 @@ def retriever_node(state: AgentState):
         context = "\n\n".join([doc.page_content for doc in docs])
         citations = []
         for doc in docs:
-            src = doc.metadata.get("source", "Unknown")
+            src = doc.metadata.get("source", "Unknown/Local DB Source")
             if src not in citations:
                 citations.append(src)
-        print(f" Retrieved {len(docs)} documents.")
-        return {"retrieved_context": context, "citations": citations}
+        print(f" Retrieved {len(docs)} highly accurate documents.")
+
+        reranker_scores_raw = [doc.metadata["relevance_score"] for doc in docs if "relevance_score" in doc.metadata]
+        avg_reranker = sum(reranker_scores_raw) / len(reranker_scores_raw) if reranker_scores_raw else 0.0
+
+        avg_similarity = 0.0
+        try:
+            sim_results = vector_store.similarity_search_with_relevance_scores(user_request, k=5)
+            base_scores = [s for _, s in sim_results if s is not None]
+            avg_similarity = sum(base_scores) / len(base_scores) if base_scores else 0.0
+        except Exception:
+            pass
+
+        return {
+            "retrieved_context": context,
+            "citations": citations,
+            "avg_retrieval_similarity": round(avg_similarity, 4),
+            "avg_reranker_score": round(avg_reranker, 4),
+        }
     except Exception as e:
         print(f"Retrieval error: {e}. Proceeding without context.")
-        return {"retrieved_context": "", "citations": []}
+        return {
+            "retrieved_context": "",
+            "citations": [],
+            "avg_retrieval_similarity": 0.0,
+            "avg_reranker_score": 0.0,
+        }
 
 
 def architect_node(state: AgentState):
@@ -254,6 +297,80 @@ def fixer_node(state: AgentState):
         "retry_count": attempt,
         "messages": [AIMessage(content=response.content, name="Fixer_Node")]
     }
+
+def _build_trust_explanation(retrieval_sim, reranker_norm, is_valid, retry_count, score):
+    parts = []
+    r_pct = int(retrieval_sim * 100)
+    if retrieval_sim >= 0.75:
+        parts.append(f"The knowledge base had strong coverage for this query (retrieval similarity: {r_pct}%).")
+    elif retrieval_sim >= 0.50:
+        parts.append(f"The knowledge base had moderate coverage (retrieval similarity: {r_pct}%).")
+    else:
+        parts.append(f"The knowledge base had weak coverage for this query (retrieval similarity: {r_pct}%).")
+
+    rr_pct = int(reranker_norm * 100)
+    if reranker_norm >= 0.75:
+        parts.append(f"The reranker confirmed strong relevance of the retrieved sources ({rr_pct}% confidence).")
+    elif reranker_norm >= 0.50:
+        parts.append(f"The reranker scored retrieved sources at moderate confidence ({rr_pct}%).")
+    else:
+        parts.append(f"The reranker scored retrieved sources at low confidence ({rr_pct}%).")
+
+    if not is_valid:
+        parts.append("Validation failed after max retries — manual review is required.")
+    elif retry_count >= 3:
+        parts.append(f"The code required {retry_count} self-healing fix attempts before passing validation.")
+    elif retry_count >= 1:
+        parts.append(f"The code required {retry_count} fix attempt(s) before passing validation.")
+    else:
+        parts.append("The code passed validation on the first attempt.")
+
+    return " ".join(parts)
+
+
+def trust_assessor_node(state: AgentState):
+    print("--- 🛡️  TRUST ASSESSOR NODE ---")
+    retrieval_sim  = state.get("avg_retrieval_similarity", 0.0)
+    reranker_raw   = state.get("avg_reranker_score",       0.0)
+    is_valid       = state.get("is_valid",    False)
+    retry_count    = state.get("retry_count", 0)
+
+    reranker_norm = 1.0 / (1.0 + math.exp(-reranker_raw)) if reranker_raw != 0 else 0.5
+    validation_score = 1.0 if is_valid else 0.0
+
+    score = (0.35 * retrieval_sim) + (0.35 * reranker_norm) + (0.30 * validation_score)
+    score = round(min(max(score, 0.0), 1.0), 3)
+
+    if not is_valid:
+        score = min(score, 0.40)
+
+    if score >= 0.85:
+        badge, tier = "🟢", "High Trust"
+    elif score >= 0.60:
+        badge, tier = "🟡", "Review Recommended"
+    else:
+        badge, tier = "🔴", "Low Trust — Manual Check Required"
+
+    if not is_valid:
+        badge, tier = "🔴", "Low Trust — Validation Failed"
+
+    label = f"{badge} {tier}"
+    factors = {
+        "retrieval_similarity": round(retrieval_sim, 3),
+        "reranker_score_norm":  round(reranker_norm, 3),
+        "reranker_score_raw":   round(reranker_raw, 3),
+        "validation_passed":    validation_score,
+        "retry_count":          float(retry_count),
+    }
+    explanation = _build_trust_explanation(retrieval_sim, reranker_norm, is_valid, retry_count, score)
+    return {
+        "trust_score": score,
+        "trust_label": label,
+        "trust_factors": factors,
+        "trust_explanation": explanation,
+    }
+
+
 
 
 def hitl_node(state: AgentState):
@@ -351,16 +468,15 @@ def start_routing(state: AgentState):
 
 
 def validator_routing(state: AgentState):
-    """After Validator: route to HitL (pass), Fixer (fail), or END (max retries)."""
     MAX_RETRIES = 3
     if state.get("is_valid"):
-        print(" Code is valid! Routing to HitL review.")
-        return "hitl"
+        print(" Code is valid! Routing to Trust Assessor.")
+        return "trust_assessor"
     if state.get("retry_count", 0) >= MAX_RETRIES:
-        print(" Max retries reached. Finishing workflow with errors.")
-        return "end"
+        print(" Max retries reached. Routing to Trust Assessor.")
+        return "trust_assessor"
     print(" Validation failed. Routing to Fixer Node.")
-    return "fixer"
+    return "fixer"""
 
 
 def hitl_routing(state: AgentState):
@@ -384,6 +500,7 @@ workflow.add_node("Architect_Node",     architect_node)
 workflow.add_node("Validator_Node",     validator_node)
 workflow.add_node("Fixer_Node",         fixer_node)
 workflow.add_node("HitL_Node",          hitl_node)
+workflow.add_node("Trust_Assessor_Node", trust_assessor_node)
 workflow.add_node("Patcher_Node",       patcher_node)
 
 # START: branch on upload_mode
@@ -401,10 +518,10 @@ workflow.add_edge("Upload_Entry_Node", "Validator_Node")
 
 # Validator can go to HitL, Fixer, or END
 workflow.add_conditional_edges("Validator_Node", validator_routing, {
-    "hitl":   "HitL_Node",
-    "fixer":  "Fixer_Node",
-    "end":    END
+    "trust_assessor": "Trust_Assessor_Node",
+    "fixer":  "Fixer_Node"
 })
+workflow.add_edge("Trust_Assessor_Node", "HitL_Node")
 
 # Fixer loops back to Validator
 workflow.add_edge("Fixer_Node", "Validator_Node")
@@ -451,6 +568,12 @@ if __name__ == "__main__":
         "hitl_action":       "",
         "patch_request":     "",
         "upload_mode":       False,
+        "avg_retrieval_similarity": 0.0,
+        "avg_reranker_score":       0.0,
+        "trust_score":              0.0,
+        "trust_label":              "",
+        "trust_factors":            {},
+        "trust_explanation":        "",
     }
 
     print("\n🚀 Starting workflow...\n")

@@ -233,6 +233,7 @@ WORKFLOWS = {
             ("Retriever_Node", "🔍", "Retriever", "MultiQuery + Rerank"),
             ("Architect_Node", "🏗️", "Architect", "Terraform Blueprint"),
             ("Validator_Node", "🔎", "Validator", "Syntax + Security"),
+            ("Trust_Assessor_Node", "🛡️", "Trust", "Trust Assessor"),
             ("HitL_Node", "⏸️", "HitL", "Human Review"),
             ("Patcher_Node", "🔧", "Patcher", "Surgical Diff"),
         ],
