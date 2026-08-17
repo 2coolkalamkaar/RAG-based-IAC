@@ -1,6 +1,4 @@
 # Comprehensive Evaluation Report: Enterprise RAG-Based IaC Agent
-**Prepared for Atlan Engineering Team**
-
 ---
 
 ## 1. Executive Summary
