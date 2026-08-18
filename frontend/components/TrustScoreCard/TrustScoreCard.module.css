@@ -1,0 +1,133 @@
+.card {
+  border-radius: 14px;
+  padding: 1.4rem 1.6rem;
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin: 1rem 0;
+  transition: all 0.3s ease;
+  animation: fadeIn 0.4s ease;
+}
+
+.high   { background: #0a1f10; border: 1px solid #2ea043; }
+.review { background: #1f1800; border: 1px solid #d29922; }
+.low    { background: #1f0a0a; border: 1px solid #da3633; }
+
+.scoreSection {
+  text-align: center;
+  min-width: 90px;
+  padding-top: 4px;
+  flex-shrink: 0;
+}
+
+.score {
+  font-size: 2.8rem;
+  font-weight: 800;
+  line-height: 1;
+  font-family: var(--font-mono);
+}
+.high   .score { color: #3fb950; }
+.review .score { color: #e3b341; }
+.low    .score { color: #f85149; }
+
+.scoreLabel {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-top: 4px;
+  color: #484f58;
+}
+
+.details { flex: 1; min-width: 260px; }
+
+.label {
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+.high   .label { color: #3fb950; }
+.review .label { color: #e3b341; }
+.low    .label { color: #f85149; }
+
+.factors { display: flex; flex-direction: column; gap: 8px; }
+
+.factor {}
+
+.factorHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.factorLabel {
+  font-size: 0.76rem;
+  color: #c9d1d9;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.factorWeight {
+  font-size: 0.66rem;
+  color: #484f58;
+}
+
+.factorPct {
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+.high   .factorPct { color: #3fb950; }
+.review .factorPct { color: #e3b341; }
+.low    .factorPct { color: #f85149; }
+
+.barTrack {
+  height: 5px;
+  background: #21262d;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.high   .barFill { background: #3fb950; }
+.review .barFill { background: #e3b341; }
+.low    .barFill { background: #f85149; }
+
+.explanation {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(0,0,0,0.25);
+  border-radius: 6px;
+}
+.high   .explanation { border-left: 3px solid #3fb950; }
+.review .explanation { border-left: 3px solid #e3b341; }
+.low    .explanation { border-left: 3px solid #f85149; }
+
+.explanationTitle {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+}
+.high   .explanationTitle { color: #3fb950; }
+.review .explanationTitle { color: #e3b341; }
+.low    .explanationTitle { color: #f85149; }
+
+.explanationText {
+  font-size: 0.78rem;
+  color: #c9d1d9;
+  line-height: 1.6;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

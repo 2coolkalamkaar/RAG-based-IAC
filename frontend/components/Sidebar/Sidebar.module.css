@@ -1,0 +1,113 @@
+.sidebar {
+  width: 240px;
+  min-height: 100vh;
+  background: linear-gradient(180deg, #0d1117 0%, #161b22 100%);
+  border-right: 1px solid #21262d;
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem 1rem;
+  gap: 0.5rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.logoIcon { font-size: 1.8rem; }
+
+.logoTitle {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #e6edf3;
+}
+
+.logoSub {
+  font-size: 0.7rem;
+  color: #7d8590;
+  margin-top: 1px;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 1rem;
+}
+
+.navLink {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  color: #8b949e;
+  transition: all 0.15s ease;
+  text-decoration: none;
+}
+.navLink:hover { background: #21262d; color: #e6edf3; text-decoration: none; }
+.navLink.active { background: rgba(88,166,255,0.12); color: #58a6ff; }
+
+.section { margin-top: 0.5rem; }
+
+.sectionLabel {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #484f58;
+  padding: 0 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+.workflowBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: #8b949e;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+  font-family: var(--font-sans);
+}
+.workflowBtn:hover { background: #21262d; color: #e6edf3; }
+.workflowActive { background: #21262d; color: #e6edf3; font-weight: 600; }
+
+.footer {
+  margin-top: auto;
+  padding: 1rem 0.75rem 0.5rem;
+  border-top: 1px solid #21262d;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.footerStat { display: flex; flex-direction: column; gap: 2px; }
+
+.footerLabel {
+  font-size: 0.68rem;
+  color: #484f58;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.footerValue {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #58a6ff;
+  font-family: var(--font-mono);
+}

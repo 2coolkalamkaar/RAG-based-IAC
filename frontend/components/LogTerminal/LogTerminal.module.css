@@ -1,0 +1,22 @@
+.terminal {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  padding: 1rem 1.2rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.8;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0.5rem 0 1rem;
+}
+
+.line { display: flex; gap: 0.5rem; }
+
+.ts { color: #484f58; flex-shrink: 0; }
+
+.info  { color: #c9d1d9; }
+.ok    { color: #3fb950; }
+.warn  { color: #e3b341; }
+.err   { color: #f85149; }
+.dim   { color: #484f58; }

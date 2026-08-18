@@ -1,0 +1,115 @@
+.wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex-wrap: wrap;
+  margin: 1.5rem 0;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 14px;
+  padding: 1.2rem 1rem;
+}
+
+.stageWrapper {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 100px;
+}
+
+.card {
+  flex: 1;
+  padding: 0.9rem 0.6rem;
+  border-radius: 10px;
+  text-align: center;
+  position: relative;
+  transition: all 0.3s ease;
+  border: 1px solid transparent;
+  overflow: hidden;
+}
+
+.icon { font-size: 1.4rem; margin-bottom: 0.3rem; }
+
+.label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.2rem;
+}
+
+.status { font-size: 0.68rem; }
+
+/* Status variants */
+.idle { color: #484f58; border-color: transparent; }
+.idle .label { color: #484f58; }
+
+.running {
+  color: #58a6ff;
+  border-color: rgba(88,166,255,0.3);
+  background: rgba(88,166,255,0.06);
+  animation: glow 1.5s ease-in-out infinite;
+}
+.running .label { color: #79b8ff; }
+
+.done {
+  color: #3fb950;
+  border-color: rgba(63,185,80,0.3);
+  background: rgba(63,185,80,0.06);
+}
+.done .label { color: #3fb950; }
+
+.warning {
+  color: #e3b341;
+  border-color: rgba(227,179,65,0.3);
+  background: rgba(227,179,65,0.06);
+}
+.warning .label { color: #e3b341; }
+
+.failed {
+  color: #f85149;
+  border-color: rgba(248,81,73,0.3);
+  background: rgba(248,81,73,0.06);
+}
+.failed .label { color: #f85149; }
+
+.paused {
+  color: #ffa657;
+  border-color: rgba(255,166,87,0.3);
+  background: rgba(255,166,87,0.06);
+  animation: pausePulse 2s ease-in-out infinite;
+}
+.paused .label { color: #ffa657; }
+
+.pulse {
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #58a6ff;
+  animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.connector {
+  width: 20px;
+  height: 2px;
+  background: #30363d;
+  flex-shrink: 0;
+  transition: background 0.3s ease;
+}
+.connectorActive { background: #3fb950; }
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 0 rgba(88,166,255,0); }
+  50% { box-shadow: 0 0 12px rgba(88,166,255,0.3); }
+}
+
+@keyframes pausePulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255,166,87,0); }
+  50% { box-shadow: 0 0 12px rgba(255,166,87,0.3); }
+}
+
+@keyframes ping {
+  0% { transform: scale(1); opacity: 1; }
+  75%, 100% { transform: scale(2); opacity: 0; }
+}

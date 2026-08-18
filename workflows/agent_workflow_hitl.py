@@ -45,7 +45,8 @@ class AgentState(TypedDict):
     trust_score:               float
     trust_label:               str
     trust_factors:             Dict[str, float]
-    trust_explanation:         str
+    trust_explanation:         str     # Rule-based natural language explanation
+    resource_integrity_passed: bool    # True if Fixer didn't maliciously drop resources
 
 
 # ─────────────────────────────────────────────────
@@ -62,6 +63,16 @@ def parse_terraform_code(response_content: str) -> dict:
         if filename not in files:
             files[filename] = match.group("code").strip()
     return files if files else {}
+
+
+def extract_resource_types(files: dict) -> set[str]:
+    import re
+    types = set()
+    for content in files.values():
+        matches = re.findall(r'resource\s+"([^"]+)"', content)
+        for m in matches:
+            types.add(m)
+    return types
 
 
 def validate_terraform_code(files: dict) -> tuple[bool, str]:
@@ -283,22 +294,75 @@ def fixer_node(state: AgentState):
     print(f"---  FIXER NODE (Attempt {attempt}) ---")
     validation_errors = state.get("validation_errors", "")
     files = state.get("terraform_code", {})
+    user_request = state.get("user_request", "")
     code_context = "\n".join([f"--- {k} ---\n{v}" for k, v in files.items()])
 
+    system_prompt = (
+        "You are a Terraform architect fixing broken code so it satisfies both the "
+        "validation tooling and the user's original infrastructure request.\n\n"
+        "Rules:\n"
+        "1. Preserve every resource type required by the user's original request. "
+        "Fixing an error means correcting that resource's configuration — never "
+        "deleting the resource, commenting it out, or replacing it with a dummy "
+        "/ placeholder resource to make validation pass.\n"
+        "2. If a specific resource truly cannot be made valid, do not silently drop "
+        "it. Leave it in place with a `# FIXME:` comment explaining exactly what "
+        "is blocking it, so this gets escalated to a human instead of falsely "
+        "reporting success.\n"
+        "3. Make the minimal change needed to fix each error — don't restructure "
+        "resources that weren't implicated in the validation errors.\n"
+        "4. Output the COMPLETE corrected Terraform files in markdown format with "
+        "their filenames.\n"
+        "5. After the code, include a '## Change Summary' listing every resource "
+        "present before your fix, every resource present after, and a one-line "
+        "reason for each change."
+    )
+    
+    human_prompt = (
+        "Here is the user's original infrastructure request:\n{original_instruction}\n\n"
+        "Here is the broken code:\n{code}\n\n"
+        "Here are the validation errors:\n{errors}\n\n"
+        "Fix the code so it satisfies both the validation tooling and the original "
+        "request above. Follow rules 1 and 2 exactly — do not remove any resource "
+        "type that the original request required."
+    )
+
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a Terraform architect fixing broken code. Fix the errors and output the COMPLETE corrected Terraform files in markdown format with their filenames."),
-        ("human", "Here is the broken code:\n\n{code}\n\nHere are the validation errors:\n\n{errors}\n\nPlease fix the code.")
+        ("system", system_prompt),
+        ("human", human_prompt)
     ])
     chain = prompt | llm
-    response = chain.invoke({"code": code_context, "errors": validation_errors})
+    response = chain.invoke({
+        "original_instruction": user_request, 
+        "code": code_context, 
+        "errors": validation_errors
+    })
+    
     new_files = parse_terraform_code(response.content) or files
+    
+    # --- Deterministic Resource Integrity Check ---
+    pre_fix_types = extract_resource_types(files)
+    post_fix_types = extract_resource_types(new_files)
+    
+    missing_types = pre_fix_types - post_fix_types
+    integrity_passed = True
+    
+    if missing_types:
+        combined_new_code = "\n".join(new_files.values())
+        if "# FIXME:" not in combined_new_code:
+            integrity_passed = False
+            print(f"   ⚠️ WARNING: Fixer silently dropped resource types {missing_types}!")
+            
+    current_integrity = state.get("resource_integrity_passed", True)
+    
     return {
         "terraform_code": new_files,
         "retry_count": attempt,
+        "resource_integrity_passed": current_integrity and integrity_passed,
         "messages": [AIMessage(content=response.content, name="Fixer_Node")]
     }
 
-def _build_trust_explanation(retrieval_sim, reranker_norm, is_valid, retry_count, score):
+def _build_trust_explanation(retrieval_sim, reranker_norm, is_valid, retry_count, score, integrity_passed=True):
     parts = []
     r_pct = int(retrieval_sim * 100)
     if retrieval_sim >= 0.75:
@@ -325,6 +389,9 @@ def _build_trust_explanation(retrieval_sim, reranker_norm, is_valid, retry_count
     else:
         parts.append("The code passed validation on the first attempt.")
 
+    if not integrity_passed:
+        parts.append("CRITICAL: The self-healing loop deleted one or more requested resources to artificially pass validation. This violates resource integrity.")
+
     return " ".join(parts)
 
 
@@ -334,6 +401,7 @@ def trust_assessor_node(state: AgentState):
     reranker_raw   = state.get("avg_reranker_score",       0.0)
     is_valid       = state.get("is_valid",    False)
     retry_count    = state.get("retry_count", 0)
+    integrity_passed = state.get("resource_integrity_passed", True)
 
     reranker_norm = 1.0 / (1.0 + math.exp(-reranker_raw)) if reranker_raw != 0 else 0.5
     validation_score = 1.0 if is_valid else 0.0
@@ -343,6 +411,8 @@ def trust_assessor_node(state: AgentState):
 
     if not is_valid:
         score = min(score, 0.40)
+    if not integrity_passed:
+        score = min(score, 0.20)
 
     if score >= 0.85:
         badge, tier = "🟢", "High Trust"
@@ -353,6 +423,8 @@ def trust_assessor_node(state: AgentState):
 
     if not is_valid:
         badge, tier = "🔴", "Low Trust — Validation Failed"
+    if not integrity_passed:
+        badge, tier = "🔴", "Low Trust — Resource Integrity Failed"
 
     label = f"{badge} {tier}"
     factors = {
@@ -361,8 +433,9 @@ def trust_assessor_node(state: AgentState):
         "reranker_score_raw":   round(reranker_raw, 3),
         "validation_passed":    validation_score,
         "retry_count":          float(retry_count),
+        "resource_integrity":   1.0 if integrity_passed else 0.0,
     }
-    explanation = _build_trust_explanation(retrieval_sim, reranker_norm, is_valid, retry_count, score)
+    explanation = _build_trust_explanation(retrieval_sim, reranker_norm, is_valid, retry_count, score, integrity_passed)
     return {
         "trust_score": score,
         "trust_label": label,
@@ -574,6 +647,7 @@ if __name__ == "__main__":
         "trust_label":              "",
         "trust_factors":            {},
         "trust_explanation":        "",
+        "resource_integrity_passed": True,
     }
 
     print("\n🚀 Starting workflow...\n")
