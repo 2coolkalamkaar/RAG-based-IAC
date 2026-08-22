@@ -102,6 +102,126 @@ Speed and *correctness of what gets retrieved* are separate problems:
 
 ---
 
+## 5. Partial-apply failure mode — not yet built
+
+**Why this matters:** once a job's `terraform apply` starts touching a real AWS account, "it
+failed" is no longer a safe answer. If 2 of 5 planned resources were created before an error, real
+billed infrastructure now exists, tagged correctly but invisible to anyone looking at the job
+history. This is the first question a security-minded engineer will ask, and right now the honest
+answer is "we haven't fully specified it." This section specifies it.
+
+### 5.1 What actually happens today (verified against the current code)
+
+- **The workspace is safe — Phase 1 already got this right.** Each job gets a persistent
+  `workspaces/{job_id}/` directory (`db/job_store.py` `create_workspace`), not a `tempfile.mkdtemp()`
+  that gets deleted after the run. Terraform writes `terraform.tfstate` incrementally as each
+  resource is created, so if resource 3 of 5 fails, resources 1 and 2 are recorded in that state
+  file on disk. **Nothing is silently lost.**
+- **But `apply_status` collapses everything to one bit.** `apply_node` in
+  `workflows/agent_workflow_hitl.py` returns `apply_status: "failed"` whether zero resources were
+  touched or four of five succeeded. `db/job_store.update_apply_status()` just persists that
+  string. The job history / HitLPanel has no way to distinguish "nothing happened, safe to ignore"
+  from "real resources exist, someone needs to act."
+- **There is currently no supported retry/cleanup path on the same job.** The graph has
+  `Apply_Node → END` as an unconditional edge — once a run ends there, the thread has no pending
+  `interrupt()` for a `Command(resume=...)` to attach to. To do anything about a partially-applied
+  job today, a human would have to `cd` into `workspaces/{job_id}/` and run `terraform` by hand,
+  entirely outside the product. Starting a *new* job instead would regenerate fresh Terraform in a
+  fresh workspace with no awareness that the old workspace still has real resources sitting in it.
+- **The timeout path is the riskiest moment.** `subprocess.run(..., timeout=APPLY_TIMEOUT_SECONDS)`
+  kills the process via `Popen.kill()` (SIGKILL) the instant the timeout fires. Terraform is
+  mid-write to its state file when this can happen — a hard kill is the one scenario more dangerous
+  than a clean failure, because it risks a **corrupted** state file, not just an incomplete one.
+
+### 5.2 The one-paragraph answer for judges (works today, ship this first)
+
+> "Every job's Terraform state lives in a workspace directory that's never deleted, so even if an
+> apply dies halfway through, nothing is silently lost — the state file has exactly what's real.
+> We don't currently surface partial-vs-total failure as a distinct status, and there's no
+> in-product retry button yet — recovering today means operating that workspace directly. That's
+> the next thing we're closing before this goes anywhere near a real account unattended."
+
+This is honest, doesn't overclaim, and correctly identifies the persistent workspace as the thing
+that makes the rest of this fixable rather than catastrophic.
+
+### 5.3 Implementation plan
+
+**1. Detect what's actually real after a failure — read state, don't trust the exit code.**
+Add a helper in `agent_workflow_hitl.py`, called from `apply_node`'s except/failure branches:
+
+```python
+def _reconcile_apply_state(workspace_path: str, env: dict, planned_create_count: int) -> dict:
+    """After a failed/timed-out apply, ask Terraform's own state — not the exit code —
+    what actually exists. Returns {"status": "failed"|"partial"|"applied", "created_resources": [...]}."""
+    res = subprocess.run(
+        ["terraform", "state", "list"], cwd=workspace_path, env=env,
+        capture_output=True, text=True,
+    )
+    resources = [r for r in res.stdout.strip().splitlines() if r]
+    if not resources:
+        return {"status": "failed", "created_resources": []}
+    if len(resources) < planned_create_count:
+        return {"status": "partial", "created_resources": resources}
+    return {"status": "applied", "created_resources": resources}
+```
+
+Call this from both the `subprocess.TimeoutExpired` branch and the `returncode != 0` branch of
+`apply_node`, using `state.get("plan_summary", {}).get("create", 0)` as `planned_create_count`.
+
+**2. Add a `"partial"` status and a `created_resources` column.**
+Extend `db/job_store.py` the same way `workspace_path`/`apply_status`/`plan_summary` were added
+(there's already an additive-column migration pattern in that file — follow it):
+```python
+("created_resources", "TEXT"),  # JSON list of resource addresses actually in state
+```
+`update_apply_status()` should accept and persist `created_resources`; `apply_status` can now be
+one of `"applied" | "partial" | "failed" | "destroyed"`.
+
+**3. Graceful subprocess termination instead of a hard kill on timeout.**
+`subprocess.run(timeout=...)` only exposes `.kill()` (SIGKILL) on expiry. Use `Popen` directly so a
+timeout sends SIGTERM first and gives Terraform a grace window to finish its current resource
+operation and flush state cleanly, only escalating to SIGKILL if it ignores that:
+```python
+proc = subprocess.Popen(["terraform", "apply", "-auto-approve", "tfplan"], cwd=workspace_path, env=env, ...)
+try:
+    proc.wait(timeout=APPLY_TIMEOUT_SECONDS)
+except subprocess.TimeoutExpired:
+    proc.terminate()          # SIGTERM — let Terraform finish its current write
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()            # last resort only
+```
+
+**4. A supported reconciliation path — new endpoint, never a silent resume.**
+Add `POST /api/jobs/{job_id}/reconcile` in `api/server.py`. Given the job's stored
+`workspace_path`, it re-enters the graph **at `Plan_Node`, never directly at `Apply_Node`** — a
+fresh plan against the *current real state* is mandatory before any further action, so the human
+reviewing it sees exactly what's left to create or what's now safe to tear down. Route the result
+back through `HitL_Node` like any other review; never auto-apply or auto-destroy from this path.
+
+**5. Surface it distinctly in the UI, not folded into "failed."**
+In `HitLPanel` and the job history list: a job with `apply_status == "partial"` gets its own
+visual state (e.g. "⚠️ Partial — 2/5 resources created, action required") with a prominent
+"Reconcile" button wired to the new endpoint — visually and behaviorally distinct from the generic
+red "failed" badge, which today looks identical whether zero or four resources exist.
+
+**6. Log the detection event even without full audit UI.**
+Phase 7 (exportable audit trail) is already cut from hackathon scope — but log
+`_reconcile_apply_state()`'s result server-side regardless, so there's at least a record in
+application logs of every partial-state detection, independent of whether anyone clicks "Reconcile."
+
+### 5.4 Priority relative to the rest of this plan
+
+Low urgency for the demo itself if the demo stays on `MOCK_AWS=true` (this code path never
+executes there). **High urgency before any real, unattended `MOCK_AWS=false` apply** — and worth
+having the §5.2 answer memorized regardless, since this is a predictable question from anyone with
+production infra experience. Suggest: ship §5.2 as a verbal answer immediately (free), and treat
+5.3 items 1–3 (state reconciliation + graceful kill) as a pre-requisite for turning `MOCK_AWS=false`
+on in front of anyone, ahead of items 4–6 (full reconcile UI), which can follow after the deadline.
+
+---
+
 ## Suggested build order (pre-hackathon)
 
 1. Warm-start on boot (§2.1) — cheap, fixes the worst first-impression risk.
@@ -110,6 +230,8 @@ Speed and *correctness of what gets retrieved* are separate problems:
 4. Wire in policy-doc retrieval (§3.2) — medium effort, this *is* the differentiation pitch.
 5. Re-run the Claude-Code benchmark warm (§1 verification) to get an honest before/after number
    to put on a slide.
+6. Have the §5.2 partial-apply answer ready verbally; implement §5.3 items 1–3 (state
+   reconciliation + graceful kill) before ever running `MOCK_AWS=false` unattended.
 
 Everything else in this document is real but lower priority — worth doing, not worth doing before
 the deadline.
