@@ -71,6 +71,59 @@ def _get_iam_policies(plan_json: dict) -> list[str]:
     return policy_strings
 
 
+# ── Cost estimation (static table, not a live pricing API) ────────────────────
+
+_RESOURCE_MONTHLY_COST_USD = {
+    "aws_db_instance":          15.0,
+    "aws_nat_gateway":          33.0,
+    "aws_lb":                   18.0,
+    "aws_alb":                  18.0,
+    "aws_elasticache_cluster":  15.0,
+    "aws_eks_cluster":          73.0,
+    "aws_s3_bucket":            0.5,
+    "aws_ebs_volume":           1.0,
+    "aws_dynamodb_table":       1.0,
+    "aws_cloudfront_distribution": 5.0,
+    "aws_route53_zone":         0.5,
+}
+
+_INSTANCE_TYPE_MONTHLY_USD = {
+    "t3.micro": 7.5, "t3.small": 15.0, "t3.medium": 30.0, "t3.large": 60.0,
+    "t2.micro": 8.5, "t2.small": 17.0, "t2.medium": 34.0,
+    "m5.large": 70.0, "m5.xlarge": 140.0,
+    "r5.large": 92.0,
+}
+
+
+def estimate_monthly_cost(plan_json: dict) -> float:
+    """
+    Rough static monthly cost estimate from a terraform plan JSON.
+
+    This is NOT a live pricing lookup (no AWS Price List API call) — it's a
+    coarse per-resource-type table, good enough to gate the cost-ceiling
+    guardrail without adding an external dependency. Only resources being
+    created are counted (updates/deletes don't add new spend).
+    """
+    total = 0.0
+    for change in _get_resource_changes(plan_json):
+        if "create" not in _get_actions(change):
+            continue
+
+        rtype = change.get("type", "")
+        after = change.get("change", {}).get("after") or {}
+
+        if rtype == "aws_instance" and isinstance(after, dict):
+            instance_type = after.get("instance_type", "")
+            total += _INSTANCE_TYPE_MONTHLY_USD.get(
+                instance_type, _RESOURCE_MONTHLY_COST_USD.get(rtype, 0.0)
+            )
+            continue
+
+        total += _RESOURCE_MONTHLY_COST_USD.get(rtype, 0.0)
+
+    return round(total, 2)
+
+
 # ── Check 1: Ownership (blast radius) ─────────────────────────────────────────
 
 def check_ownership(plan_json: dict, job_id: str) -> tuple[bool, list[str]]:

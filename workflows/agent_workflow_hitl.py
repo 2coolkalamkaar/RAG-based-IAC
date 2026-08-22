@@ -25,6 +25,11 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import interrupt
 
+from aws.credentials_manager import assume_role
+from workflows.blast_radius_guard import run_all_guards, estimate_monthly_cost
+
+APPLY_TIMEOUT_SECONDS = int(os.getenv("APPLY_TIMEOUT_SECONDS", "600"))
+
 # ─────────────────────────────────────────────────
 # 1. Agent State
 # ─────────────────────────────────────────────────
@@ -164,6 +169,95 @@ mq_llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f45
 
 
 # ─────────────────────────────────────────────────
+# 3b. Retriever singletons — loaded once per process, not once per request
+# ─────────────────────────────────────────────────
+_embedding_model    = None
+_vector_store       = None
+_cross_encoder      = None
+_stale_docs_cleaned = False
+
+try:
+    from langchain_classic.retrievers.document_compressors.cross_encoder_rerank import CrossEncoderReranker
+    from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
+
+    class ScorePreservingReranker(CrossEncoderReranker):
+        """CrossEncoderReranker that keeps each doc's raw relevance score in metadata."""
+        def compress_documents(self, documents, query, callbacks=None):
+            scores = self.model.score([(query, doc.page_content) for doc in documents])
+            docs_with_scores = list(zip(documents, scores, strict=False))
+            result = sorted(docs_with_scores, key=operator.itemgetter(1), reverse=True)
+            final_docs = []
+            for doc, score in result[:self.top_n]:
+                doc.metadata["relevance_score"] = float(score)
+                final_docs.append(doc)
+            return final_docs
+
+    _RERANKER_IMPORTS_OK = True
+except ImportError as _e:
+    _RERANKER_IMPORTS_OK = False
+    print(f"   Reranker deps not available ({_e}). Reranking will be skipped.")
+
+
+def _get_vector_store():
+    """Lazily create and cache the embedding model + Chroma store (loads once per process)."""
+    global _embedding_model, _vector_store, _stale_docs_cleaned
+    if _vector_store is not None:
+        return _vector_store
+
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_chroma import Chroma
+
+    DB_PATH = os.getenv("DB_PATH", os.path.join(os.getcwd(), "chroma_db_terraform"))
+    if not os.path.exists(DB_PATH):
+        return None
+
+    print("   Booting up embedding model + vector store (first request only)...")
+    _embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    _vector_store = Chroma(
+        persist_directory=DB_PATH,
+        embedding_function=_embedding_model,
+        collection_metadata={"hnsw:space": "cosine"},
+    )
+
+    if not _stale_docs_cleaned:
+        try:
+            col = _vector_store._collection
+            stale = col.get(where={"source": "iac_eval_dataset"}, include=[])
+            if stale["ids"]:
+                col.delete(ids=stale["ids"])
+        except Exception:
+            pass
+        _stale_docs_cleaned = True
+
+    return _vector_store
+
+
+def _get_cross_encoder():
+    """Lazily create and cache the CrossEncoder model (loads once per process)."""
+    global _cross_encoder
+    if not _RERANKER_IMPORTS_OK:
+        return None
+    if _cross_encoder is None:
+        from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+        print("   Booting up Score-Preserving CrossEncoder Reranker (first request only)...")
+        _cross_encoder = HuggingFaceCrossEncoder(model_name="cross-encoder/ms-marco-MiniLM-L-6-v2")
+    return _cross_encoder
+
+
+def _get_aws_subprocess_env() -> dict:
+    """Full subprocess env with temporary AssumeRole AWS credentials merged in.
+
+    Raises ValueError/RuntimeError (from assume_role) if the Role ARN isn't
+    configured or the AssumeRole call fails — callers must handle that as a
+    hard failure, never fall back to ambient/unscoped credentials.
+    """
+    creds = assume_role()
+    env = os.environ.copy()
+    env.update({k: v for k, v in creds.items() if not k.startswith("_")})
+    return env
+
+
+# ─────────────────────────────────────────────────
 # 4. Nodes
 # ─────────────────────────────────────────────────
 
@@ -183,58 +277,28 @@ def retriever_node(state: AgentState):
     print("--- ADVANCED RETRIEVER NODE ---")
     user_request = state.get("user_request", "")
     try:
-        from langchain_huggingface import HuggingFaceEmbeddings
-        from langchain_chroma import Chroma
         from langchain_classic.retrievers.multi_query import MultiQueryRetriever
         import logging
         logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.WARNING)
 
-        DB_PATH = os.getenv("DB_PATH", os.path.join(os.getcwd(), "chroma_db_terraform"))
-        if not os.path.exists(DB_PATH):
+        vector_store = _get_vector_store()
+        if vector_store is None:
             print("Warning: ChromaDB not found. Proceeding without context.")
             return {"retrieved_context": "", "citations": []}
 
-        embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embedding_model, collection_metadata={"hnsw:space": "cosine"})
         base_retriever = vector_store.as_retriever(search_kwargs={"k": 12})
-
-        try:
-            col = vector_store._collection
-            stale = col.get(where={"source": "iac_eval_dataset"}, include=[])
-            if stale["ids"]:
-                col.delete(ids=stale["ids"])
-        except Exception:
-            pass
 
         print("  Expanding query into multiple semantic paths...")
         mq_retriever = MultiQueryRetriever.from_llm(retriever=base_retriever, llm=mq_llm)
         retriever_pipeline = mq_retriever
 
-        try:
-            from langchain_classic.retrievers.document_compressors.cross_encoder_rerank import CrossEncoderReranker
-            from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-            from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
-            import operator
-            
-            class ScorePreservingReranker(CrossEncoderReranker):
-                def compress_documents(self, documents, query, callbacks=None):
-                    scores = self.model.score([(query, doc.page_content) for doc in documents])
-                    docs_with_scores = list(zip(documents, scores, strict=False))
-                    result = sorted(docs_with_scores, key=operator.itemgetter(1), reverse=True)
-                    final_docs = []
-                    for doc, score in result[:self.top_n]:
-                        doc.metadata["relevance_score"] = float(score)
-                        final_docs.append(doc)
-                    return final_docs
-
-            print("    Booting up Score-Preserving CrossEncoder Reranker...")
-            cross_encoder = HuggingFaceCrossEncoder(model_name="cross-encoder/ms-marco-MiniLM-L-6-v2")
+        cross_encoder = _get_cross_encoder()
+        if cross_encoder is not None:
             compressor = ScorePreservingReranker(model=cross_encoder, top_n=5)
             retriever_pipeline = ContextualCompressionRetriever(
                 base_compressor=compressor, base_retriever=mq_retriever
             )
-        except ImportError as e:
-            print(f"   Reranker not available ({e}). Falling back to MultiQuery.")
+        else:
             base_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
             retriever_pipeline = MultiQueryRetriever.from_llm(retriever=base_retriever, llm=mq_llm)
 
@@ -630,31 +694,35 @@ def plan_node(state: AgentState):
             "cost_ceiling_passed": True,
         }
 
+    job_id = state.get("job_id", "unknown-job")
     workspace_path = state.get("workspace_path", tempfile.mkdtemp())
     try:
+        env = _get_aws_subprocess_env()
+
         # Run init just in case
-        subprocess.run(["terraform", "init", "-backend=false"], cwd=workspace_path, capture_output=True)
+        subprocess.run(["terraform", "init", "-backend=false"], cwd=workspace_path, env=env, capture_output=True)
         # Run plan and output to tfplan
-        plan_res = subprocess.run(["terraform", "plan", "-out=tfplan", "-detailed-exitcode"], cwd=workspace_path, capture_output=True, text=True)
-        
+        subprocess.run(["terraform", "plan", "-out=tfplan", "-detailed-exitcode"], cwd=workspace_path, env=env, capture_output=True, text=True)
+
         # Parse plan
-        show_res = subprocess.run(["terraform", "show", "-json", "tfplan"], cwd=workspace_path, capture_output=True, text=True)
+        show_res = subprocess.run(["terraform", "show", "-json", "tfplan"], cwd=workspace_path, env=env, capture_output=True, text=True)
         plan_json = json.loads(show_res.stdout) if show_res.returncode == 0 else {}
-        
-        # Very naive summary extraction
+
         resource_changes = plan_json.get("resource_changes", [])
         create_count = sum(1 for rc in resource_changes if "create" in rc.get("change", {}).get("actions", []))
         update_count = sum(1 for rc in resource_changes if "update" in rc.get("change", {}).get("actions", []))
         delete_count = sum(1 for rc in resource_changes if "delete" in rc.get("change", {}).get("actions", []))
-        
-        # Blast radius guard: For now, if we delete unmanaged resources, fail. (Naive mock logic)
-        blast_passed = delete_count == 0 # Simplistic guard
+
+        cost_estimate = estimate_monthly_cost(plan_json)
+        guard = run_all_guards(plan_json, job_id, cost_estimate)
+        print(f"   Blast-radius guard: {guard['summary']}")
 
         return {
+            "plan_json": plan_json,
             "plan_summary": {"create": create_count, "update": update_count, "delete": delete_count, "resources": [rc["address"] for rc in resource_changes]},
-            "cost_estimate_monthly": 0.0,
-            "blast_radius_passed": blast_passed,
-            "cost_ceiling_passed": True,
+            "cost_estimate_monthly": cost_estimate,
+            "blast_radius_passed": guard["blast_radius_passed"],
+            "cost_ceiling_passed": guard["cost_ceiling_passed"],
         }
     except Exception as e:
         print(f"Plan error: {e}")
@@ -676,13 +744,21 @@ def apply_node(state: AgentState):
         return {"apply_status": "failed"}
 
     try:
-        res = subprocess.run(["terraform", "apply", "-auto-approve", "tfplan"], cwd=workspace_path, capture_output=True, text=True)
+        env = _get_aws_subprocess_env()
+        res = subprocess.run(
+            ["terraform", "apply", "-auto-approve", "tfplan"],
+            cwd=workspace_path, env=env, capture_output=True, text=True,
+            timeout=APPLY_TIMEOUT_SECONDS,
+        )
         status = "applied" if res.returncode == 0 else "failed"
-        
-        out_res = subprocess.run(["terraform", "output", "-json"], cwd=workspace_path, capture_output=True, text=True)
+
+        out_res = subprocess.run(["terraform", "output", "-json"], cwd=workspace_path, env=env, capture_output=True, text=True)
         outputs = json.loads(out_res.stdout) if out_res.returncode == 0 and out_res.stdout.strip() else {}
-        
+
         return {"apply_status": status, "apply_outputs": outputs}
+    except subprocess.TimeoutExpired:
+        print(f"Apply error: exceeded {APPLY_TIMEOUT_SECONDS}s timeout — killed")
+        return {"apply_status": "failed"}
     except Exception as e:
         print(f"Apply error: {e}")
         return {"apply_status": "failed"}
@@ -698,9 +774,17 @@ def destroy_node(state: AgentState):
         return {"apply_status": "failed"}
 
     try:
-        res = subprocess.run(["terraform", "destroy", "-auto-approve"], cwd=workspace_path, capture_output=True, text=True)
+        env = _get_aws_subprocess_env()
+        res = subprocess.run(
+            ["terraform", "destroy", "-auto-approve"],
+            cwd=workspace_path, env=env, capture_output=True, text=True,
+            timeout=APPLY_TIMEOUT_SECONDS,
+        )
         status = "destroyed" if res.returncode == 0 else "failed"
         return {"apply_status": status}
+    except subprocess.TimeoutExpired:
+        print(f"Destroy error: exceeded {APPLY_TIMEOUT_SECONDS}s timeout — killed")
+        return {"apply_status": "failed"}
     except Exception as e:
         print(f"Destroy error: {e}")
         return {"apply_status": "failed"}
@@ -725,7 +809,7 @@ def validator_routing(state: AgentState):
         print(" Max retries reached. Routing to Trust Assessor.")
         return "trust_assessor"
     print(" Validation failed. Routing to Fixer Node.")
-    return "fixer"""
+    return "fixer"
 
 
 def hitl_routing(state: AgentState):
