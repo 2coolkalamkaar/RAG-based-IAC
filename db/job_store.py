@@ -4,12 +4,8 @@ Job Store — SQLite persistence for approved Terraform runs.
 Separate from LangGraph's state.db to avoid schema conflicts.
 Database path: jobs.db (project root)
 
-Schema v2 additions:
-  - workspace_path  TEXT   — persistent directory holding .tf files + state
-  - apply_status    TEXT   — NULL | "applied" | "failed" | "destroyed"
-  - apply_outputs   TEXT   — JSON of `terraform output -json` after apply
-  - plan_summary    TEXT   — JSON of resource changes from `terraform show -json`
-  - cost_estimate   REAL   — estimated monthly USD from plan
+Schema v3 additions:
+  - trust_factors   TEXT   — JSON of {factor: weight_value} for trust breakdown
 """
 import json
 import sqlite3
@@ -64,6 +60,7 @@ def init_db():
                 prompt         TEXT NOT NULL,
                 trust_score    REAL,
                 trust_label    TEXT,
+                trust_factors  TEXT,
                 files_json     TEXT NOT NULL,
                 workspace_path TEXT,
                 apply_status   TEXT,
@@ -79,6 +76,7 @@ def init_db():
             ("apply_outputs",  "TEXT"),
             ("plan_summary",   "TEXT"),
             ("cost_estimate",  "REAL"),
+            ("trust_factors",  "TEXT"),  # v3
         ]:
             _add_column_if_missing(conn, col, col_type)
 
@@ -147,6 +145,7 @@ def save_job(
     workflow: str,
     trust_score: float | None,
     trust_label: str | None,
+    trust_factors: dict | None,
     files: dict[str, str],
     workspace_path: str | None = None,
 ) -> str:
@@ -180,12 +179,14 @@ def save_job(
             """
             INSERT INTO jobs
                 (id, thread_id, created_at, workflow, prompt, trust_score,
-                 trust_label, files_json, workspace_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 trust_label, trust_factors, files_json, workspace_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id, thread_id, now, workflow, prompt,
-                trust_score, trust_label, json.dumps(files), workspace_path,
+                trust_score, trust_label,
+                json.dumps(trust_factors) if trust_factors else None,
+                json.dumps(files), workspace_path,
             ),
         )
         conn.commit()
@@ -259,6 +260,10 @@ def load_job(job_id: str) -> dict | None:
         return None
     result = dict(row)
     result["files"] = json.loads(result.pop("files_json"))
+    if result.get("trust_factors"):
+        result["trust_factors"] = json.loads(result["trust_factors"])
+    else:
+        result["trust_factors"] = {}
     if result.get("apply_outputs"):
         result["apply_outputs"] = json.loads(result["apply_outputs"])
     if result.get("plan_summary"):

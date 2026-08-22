@@ -10,10 +10,16 @@ export interface Job {
   prompt: string;
   trust_score: number | null;
   trust_label: string | null;
+  apply_status: string;
 }
 
 export interface JobDetail extends Job {
   files: Record<string, string>;
+  trust_factors: Record<string, number>;
+  trust_explanation?: string;
+  apply_outputs?: Record<string, unknown>;
+  plan_summary?: Record<string, unknown>;
+  cost_estimate?: number;
 }
 
 export interface InternalDoc {
@@ -57,11 +63,12 @@ export async function deleteJob(id: string): Promise<void> {
 export async function submitHitLAction(
   threadId: string,
   workflow: string,
-  action: "approve" | "patch",
+  action: "approve" | "patch" | "apply" | "destroy",
   patchRequest = "",
-  prompt = ""
-): Promise<void> {
-  await fetch(`${API_BASE}/api/hitl/action`, {
+  prompt = "",
+  overrideConfirmed = false
+): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/api/hitl/action`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -70,8 +77,18 @@ export async function submitHitLAction(
       action,
       patch_request: patchRequest,
       prompt,
+      override_confirmed: overrideConfirmed,
     }),
   });
+  
+  if (res.ok) {
+    try {
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+  throw new Error("Action failed");
 }
 
 // ── Docs ──────────────────────────────────────────────────────────────────────

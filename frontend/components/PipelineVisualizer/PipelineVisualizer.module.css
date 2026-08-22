@@ -1,115 +1,174 @@
 .wrapper {
+  margin: 1rem 0;
+  overflow-x: auto;
+  padding: 0.75rem 1rem;
+}
+
+.track {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0;
-  flex-wrap: wrap;
-  margin: 1.5rem 0;
-  background: #161b22;
-  border: 1px solid #21262d;
-  border-radius: 14px;
-  padding: 1.2rem 1rem;
+  min-width: max-content;
+  margin: 0 auto; /* center when narrower than container */
 }
 
-.stageWrapper {
+/* ── Each stage wrapper ── */
+.stageRow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  flex-shrink: 0;
+  /* Fixed width so every stage occupies the same space */
+  width: 72px;
+}
+
+/* ── Node circle ── */
+.node {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
-  flex: 1;
-  min-width: 100px;
+  justify-content: center;
+  position: relative;
+  background: var(--bg-elevated);
+  border: 1.5px solid var(--border);
+  transition: all 0.25s ease;
+  flex-shrink: 0;
 }
 
-.card {
-  flex: 1;
-  padding: 0.9rem 0.6rem;
-  border-radius: 10px;
-  text-align: center;
+.node_idle {
+  border-color: rgba(255,255,255,0.06);
+  opacity: 0.55;
+}
+
+.node_running {
+  border-color: var(--blue);
+  background: rgba(79,158,255,0.08);
+  box-shadow: 0 0 20px rgba(79,158,255,0.3);
+}
+
+.node_done {
+  border-color: rgba(16,185,129,0.4);
+  background: rgba(16,185,129,0.06);
+}
+
+.node_warning {
+  border-color: rgba(245,158,11,0.4);
+  background: rgba(245,158,11,0.06);
+}
+
+.node_failed {
+  border-color: rgba(239,68,68,0.4);
+  background: rgba(239,68,68,0.06);
+}
+
+.node_paused {
+  border-color: rgba(245,158,11,0.5);
+  background: rgba(245,158,11,0.08);
+  box-shadow: 0 0 16px rgba(245,158,11,0.25);
+}
+
+/* Animated ring for running nodes */
+.ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid var(--blue);
+  opacity: 0.5;
+  animation: ringPulse 1.5s ease infinite;
+}
+
+@keyframes ringPulse {
+  0%   { transform: scale(1);   opacity: 0.5; }
+  50%  { transform: scale(1.15); opacity: 0.2; }
+  100% { transform: scale(1);   opacity: 0.5; }
+}
+
+.nodeIcon {
+  font-size: 1rem;
+  line-height: 1;
+  user-select: none;
+}
+
+/* Status dot on bottom-right of node */
+.nodeDot {
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bg-base);
+}
+
+/* ── Labels ── */
+.nodeLabel {
+  margin-top: 0.45rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  transition: color 0.2s;
+}
+
+.nodeStatus {
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  margin-top: 1px;
+  font-weight: 500;
+}
+
+/* ── Connector — sits between stageRows, centered on the node circle ── */
+.connector {
+  position: absolute;
+  /* Start right after the node (node is 44px centered in 72px col = offset 58px) */
+  left: 58px;
+  top: 22px; /* half of 44px node height */
+  width: 14px; /* gap between 72px cols: 72 - 58 = 14px */
+  height: 1.5px;
+  display: flex;
+  align-items: center;
+}
+
+.connectorLine {
+  height: 1.5px;
+  width: 100%;
+  background: rgba(255,255,255,0.08);
+  border-radius: 99px;
+  transition: background 0.4s ease;
   position: relative;
-  transition: all 0.3s ease;
-  border: 1px solid transparent;
   overflow: hidden;
 }
 
-.icon { font-size: 1.4rem; margin-bottom: 0.3rem; }
-
-.label {
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: 0.2rem;
+.connectorLineDone {
+  background: linear-gradient(90deg, rgba(16,185,129,0.6) 0%, rgba(16,185,129,0.2) 100%);
 }
 
-.status { font-size: 0.68rem; }
-
-/* Status variants */
-.idle { color: #484f58; border-color: transparent; }
-.idle .label { color: #484f58; }
-
-.running {
-  color: #58a6ff;
-  border-color: rgba(88,166,255,0.3);
-  background: rgba(88,166,255,0.06);
-  animation: glow 1.5s ease-in-out infinite;
-}
-.running .label { color: #79b8ff; }
-
-.done {
-  color: #3fb950;
-  border-color: rgba(63,185,80,0.3);
-  background: rgba(63,185,80,0.06);
-}
-.done .label { color: #3fb950; }
-
-.warning {
-  color: #e3b341;
-  border-color: rgba(227,179,65,0.3);
-  background: rgba(227,179,65,0.06);
-}
-.warning .label { color: #e3b341; }
-
-.failed {
-  color: #f85149;
-  border-color: rgba(248,81,73,0.3);
-  background: rgba(248,81,73,0.06);
-}
-.failed .label { color: #f85149; }
-
-.paused {
-  color: #ffa657;
-  border-color: rgba(255,166,87,0.3);
-  background: rgba(255,166,87,0.06);
-  animation: pausePulse 2s ease-in-out infinite;
-}
-.paused .label { color: #ffa657; }
-
-.pulse {
+.connectorLineDone::after {
+  content: '';
   position: absolute;
-  top: 4px; right: 4px;
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  background: #58a6ff;
-  animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(16,185,129,0.9) 50%, transparent 100%);
+  animation: flowGlow 1.5s ease forwards;
+  background-size: 200% 100%;
 }
 
-.connector {
-  width: 20px;
-  height: 2px;
-  background: #30363d;
-  flex-shrink: 0;
-  transition: background 0.3s ease;
-}
-.connectorActive { background: #3fb950; }
-
-@keyframes glow {
-  0%, 100% { box-shadow: 0 0 0 rgba(88,166,255,0); }
-  50% { box-shadow: 0 0 12px rgba(88,166,255,0.3); }
+@keyframes flowGlow {
+  from { opacity: 0; transform: translateX(-100%); }
+  to   { opacity: 0; transform: translateX(100%); }
 }
 
-@keyframes pausePulse {
-  0%, 100% { box-shadow: 0 0 0 rgba(255,166,87,0); }
-  50% { box-shadow: 0 0 12px rgba(255,166,87,0.3); }
-}
-
-@keyframes ping {
-  0% { transform: scale(1); opacity: 1; }
-  75%, 100% { transform: scale(2); opacity: 0; }
+.connectorArrow {
+  position: absolute;
+  right: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid rgba(16,185,129,0.5);
 }

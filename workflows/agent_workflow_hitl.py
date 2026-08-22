@@ -55,6 +55,7 @@ class AgentState(TypedDict):
     # ── Trust Score fields ───────────────────────────────────────────
     avg_retrieval_similarity:  float
     avg_reranker_score:        float
+    docs_retrieved:            int     # Number of docs retrieved by the retriever
     trust_score:               float
     trust_label:               str
     trust_factors:             Dict[str, float]
@@ -67,14 +68,23 @@ class AgentState(TypedDict):
 # ─────────────────────────────────────────────────
 def parse_terraform_code(response_content: str) -> dict:
     files = {}
+
+    def clean_code(raw: str) -> str:
+        """Strip leading markdown separators (---) and blank lines that the LLM sometimes emits."""
+        lines = raw.strip().splitlines()
+        # Drop leading lines that are --- or blank (YAML-front-matter artifacts)
+        while lines and lines[0].strip() in ("---", ""):
+            lines.pop(0)
+        return "\n".join(lines).strip()
+
     pattern1 = r"```(?:hcl|terraform)?\n(?:[#\s/]*)(?P<filename>[\w\-_]+\.tf)[^\n]*?\n(?P<code>.*?)```"
     for match in re.finditer(pattern1, response_content, re.DOTALL | re.IGNORECASE):
-        files[match.group("filename").strip()] = match.group("code").strip()
+        files[match.group("filename").strip()] = clean_code(match.group("code"))
     pattern2 = r"(?:^|\n)[^\n]*?(?P<filename>[\w\-_]+\.tf)[^\n]*?\n\s*```(?:hcl|terraform|)?\n(?P<code>.*?)```"
     for match in re.finditer(pattern2, response_content, re.DOTALL | re.IGNORECASE):
         filename = match.group("filename").strip()
         if filename not in files:
-            files[filename] = match.group("code").strip()
+            files[filename] = clean_code(match.group("code"))
     return files if files else {}
 
 
@@ -113,14 +123,14 @@ def validate_terraform_code(
             return False, "Terraform binary not found."
 
         init_res = subprocess.run(  # nosemgrep: dangerous-subprocess-use
-            ["terraform", "init", "-backend=false"],
+            ["terraform", "init", "-backend=false", "-no-color"],
             cwd=work_dir, capture_output=True, text=True
         )
         if init_res.returncode != 0:
             return False, f"Terraform Init Failed:\n{init_res.stderr}\n{init_res.stdout}"
 
         val_res = subprocess.run(  # nosemgrep: dangerous-subprocess-use
-            ["terraform", "validate"],
+            ["terraform", "validate", "-no-color"],
             cwd=work_dir, capture_output=True, text=True
         )
         if val_res.returncode != 0:
@@ -254,6 +264,7 @@ def retriever_node(state: AgentState):
         return {
             "retrieved_context": context,
             "citations": citations,
+            "docs_retrieved": len(docs),
             "avg_retrieval_similarity": round(avg_similarity, 4),
             "avg_reranker_score": round(avg_reranker, 4),
         }
@@ -288,11 +299,11 @@ def architect_node(state: AgentState, config: RunnableConfig):
         "\n"
         "### MANDATORY TAGGING — NON-NEGOTIABLE ###\n"
         f"Every resource block MUST include these tags (JobID is already set for you):\n"
-        f"    tags = {{\n"
+        f"    tags = {{{{\n"
         f"      ManagedBy   = \"terraform-agent\"\n"
         f"      JobID       = \"{job_id}\"\n"
         f"      Environment = \"agent-managed\"\n"
-        f"    }}\n"
+        f"    }}}}\n"
         "Missing tags will cause the Blast-Radius Guard to hard-block apply. Do not omit them.\n"
         "\n"
         "### DENY LIST — NEVER DO THESE ###\n"
@@ -605,7 +616,97 @@ def patcher_node(state: AgentState):
 
 
 # ─────────────────────────────────────────────────
-# 5. Routing Logic
+# 5. Plan, Apply & Destroy Nodes
+# ─────────────────────────────────────────────────
+
+def plan_node(state: AgentState):
+    print("--- 📋 PLAN NODE ---")
+    if os.getenv("MOCK_AWS") == "true":
+        print("   [MOCK_AWS] Simulating Terraform Plan...")
+        return {
+            "plan_summary": {"create": 2, "update": 0, "delete": 0, "resources": ["aws_s3_bucket.mock", "aws_s3_bucket_versioning.mock"]},
+            "cost_estimate_monthly": 0.0,
+            "blast_radius_passed": True,
+            "cost_ceiling_passed": True,
+        }
+
+    workspace_path = state.get("workspace_path", tempfile.mkdtemp())
+    try:
+        # Run init just in case
+        subprocess.run(["terraform", "init", "-backend=false"], cwd=workspace_path, capture_output=True)
+        # Run plan and output to tfplan
+        plan_res = subprocess.run(["terraform", "plan", "-out=tfplan", "-detailed-exitcode"], cwd=workspace_path, capture_output=True, text=True)
+        
+        # Parse plan
+        show_res = subprocess.run(["terraform", "show", "-json", "tfplan"], cwd=workspace_path, capture_output=True, text=True)
+        plan_json = json.loads(show_res.stdout) if show_res.returncode == 0 else {}
+        
+        # Very naive summary extraction
+        resource_changes = plan_json.get("resource_changes", [])
+        create_count = sum(1 for rc in resource_changes if "create" in rc.get("change", {}).get("actions", []))
+        update_count = sum(1 for rc in resource_changes if "update" in rc.get("change", {}).get("actions", []))
+        delete_count = sum(1 for rc in resource_changes if "delete" in rc.get("change", {}).get("actions", []))
+        
+        # Blast radius guard: For now, if we delete unmanaged resources, fail. (Naive mock logic)
+        blast_passed = delete_count == 0 # Simplistic guard
+
+        return {
+            "plan_summary": {"create": create_count, "update": update_count, "delete": delete_count, "resources": [rc["address"] for rc in resource_changes]},
+            "cost_estimate_monthly": 0.0,
+            "blast_radius_passed": blast_passed,
+            "cost_ceiling_passed": True,
+        }
+    except Exception as e:
+        print(f"Plan error: {e}")
+        return {
+            "plan_summary": {"create": 0, "update": 0, "delete": 0, "resources": []},
+            "cost_estimate_monthly": 0.0,
+            "blast_radius_passed": False,
+            "cost_ceiling_passed": False,
+        }
+
+def apply_node(state: AgentState):
+    print("--- 🚀 APPLY NODE ---")
+    if os.getenv("MOCK_AWS") == "true":
+        print("   [MOCK_AWS] Simulating Terraform Apply...")
+        return {"apply_status": "applied", "apply_outputs": {"mock_bucket_arn": "arn:aws:s3:::mock-bucket-123"}}
+
+    workspace_path = state.get("workspace_path", "")
+    if not workspace_path:
+        return {"apply_status": "failed"}
+
+    try:
+        res = subprocess.run(["terraform", "apply", "-auto-approve", "tfplan"], cwd=workspace_path, capture_output=True, text=True)
+        status = "applied" if res.returncode == 0 else "failed"
+        
+        out_res = subprocess.run(["terraform", "output", "-json"], cwd=workspace_path, capture_output=True, text=True)
+        outputs = json.loads(out_res.stdout) if out_res.returncode == 0 and out_res.stdout.strip() else {}
+        
+        return {"apply_status": status, "apply_outputs": outputs}
+    except Exception as e:
+        print(f"Apply error: {e}")
+        return {"apply_status": "failed"}
+
+def destroy_node(state: AgentState):
+    print("--- 💥 DESTROY NODE ---")
+    if os.getenv("MOCK_AWS") == "true":
+        print("   [MOCK_AWS] Simulating Terraform Destroy...")
+        return {"apply_status": "destroyed"}
+
+    workspace_path = state.get("workspace_path", "")
+    if not workspace_path:
+        return {"apply_status": "failed"}
+
+    try:
+        res = subprocess.run(["terraform", "destroy", "-auto-approve"], cwd=workspace_path, capture_output=True, text=True)
+        status = "destroyed" if res.returncode == 0 else "failed"
+        return {"apply_status": status}
+    except Exception as e:
+        print(f"Destroy error: {e}")
+        return {"apply_status": "failed"}
+
+# ─────────────────────────────────────────────────
+# 6. Routing Logic
 # ─────────────────────────────────────────────────
 
 def start_routing(state: AgentState):
@@ -673,15 +774,15 @@ workflow.add_edge("Architect_Node",  "Validator_Node")
 # Upload path rejoins at Validator
 workflow.add_edge("Upload_Entry_Node", "Validator_Node")
 
-# Validator routes to Fixer or Trust Assessor
+# Validator routes to Fixer or Plan
 workflow.add_conditional_edges("Validator_Node", validator_routing, {
-    "trust_assessor": "Trust_Assessor_Node",
+    "trust_assessor": "Plan_Node",   # On pass: Plan first, then Trust → HitL
     "fixer":          "Fixer_Node"
 })
 
-# After trust assessment: run real plan
-workflow.add_edge("Trust_Assessor_Node", "Plan_Node")
-workflow.add_edge("Plan_Node",           "HitL_Node")
+# Correct order: Plan → Trust Assessor → HitL
+workflow.add_edge("Plan_Node",           "Trust_Assessor_Node")
+workflow.add_edge("Trust_Assessor_Node", "HitL_Node")
 
 # Fixer loops back to Validator
 workflow.add_edge("Fixer_Node", "Validator_Node")

@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from db.job_store import (
     init_db, save_job, load_all_jobs, load_job, delete_job,
-    is_apply_paused, set_apply_paused, update_plan_summary,
+    is_apply_paused, set_apply_paused, update_plan_summary, update_apply_status,
 )
 from data.custom_doc_injector import inject_document, list_internal_docs
 from langchain_chroma import Chroma
@@ -152,6 +152,7 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
         "patch_request": "",
         "upload_mode":   False,
         "resource_integrity_passed": True,
+        "docs_retrieved": 0,
     }
 
     final_state = initial_state.copy()
@@ -192,10 +193,12 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
                 # Enriched events per node
                 if node_name == "Retriever_Node":
                     citations = state_update.get("citations", [])
+                    docs_count = state_update.get("docs_retrieved", len(citations))
                     yield _sse("node_update", {
                         "node": node_name,
                         "status": "done",
                         "citations": citations,
+                        "docs_retrieved": docs_count,
                         "avg_retrieval_similarity": state_update.get("avg_retrieval_similarity", 0.0),
                     })
 
@@ -209,10 +212,12 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
 
                 elif node_name == "Validator_Node":
                     is_valid = state_update.get("is_valid", False)
+                    errors = state_update.get("validation_errors", "")
                     yield _sse("node_update", {
                         "node": node_name,
                         "status": "done" if is_valid else "warning",
                         "is_valid": is_valid,
+                        "validation_errors": errors,
                     })
 
                 elif node_name == "Fixer_Node":
@@ -274,7 +279,19 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
         # Final state
         if config:
             try:
-                final_state = agent_app.get_state(config).values
+                state_snapshot = agent_app.get_state(config)
+                final_state = state_snapshot.values
+                
+                # If we are paused before HitL_Node, emit hitl_pause and exit instead of complete
+                if "HitL_Node" in state_snapshot.next:
+                    yield _sse("hitl_pause", {
+                        "node": "HitL_Node",
+                        "status": "paused",
+                        "thread_id": thread_id,
+                        "files": final_state.get("terraform_code", {}),
+                        "citations": final_state.get("citations", []),
+                    })
+                    return
             except Exception:
                 pass
 
@@ -353,26 +370,28 @@ def hitl_action(req: HitLAction):
 
     # Persist job on approve or apply
     if req.action in ("approve", "apply"):
-        save_job(
+        job_id = save_job(
             thread_id=req.thread_id,
             prompt=req.prompt,
             workflow=req.workflow,
             trust_score=final_state.get("trust_score"),
             trust_label=final_state.get("trust_label"),
+            trust_factors=final_state.get("trust_factors"),
             files=final_state.get("terraform_code", {}),
             workspace_path=final_state.get("workspace_path"),
         )
         # Persist plan summary if available
         if final_state.get("plan_summary"):
-            from db.job_store import update_plan_summary
-            # Get job by thread_id
-            jobs = load_all_jobs(limit=1)
-            if jobs:
-                update_plan_summary(
-                    jobs[0]["id"],
-                    final_state.get("plan_summary", {}),
-                    final_state.get("cost_estimate_monthly", 0.0),
-                )
+            update_plan_summary(
+                job_id,
+                final_state.get("plan_summary", {}),
+                final_state.get("cost_estimate_monthly", 0.0),
+            )
+        # If this was a direct apply, persist the apply status immediately
+        if req.action == "apply":
+            apply_status = final_state.get("apply_status", "")
+            if apply_status:
+                update_apply_status(job_id, apply_status, final_state.get("apply_outputs"))
 
     return {
         "status": "ok",

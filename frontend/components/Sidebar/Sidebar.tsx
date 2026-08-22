@@ -1,83 +1,93 @@
 "use client";
-
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, History, BookOpen, Cpu, Shield, Zap, GitBranch, HardHat, BarChart2 } from "lucide-react";
+import { Zap, History, Settings, Database, Shield, LayoutDashboard } from "lucide-react";
 import styles from "./Sidebar.module.css";
 
-const NAV_LINKS = [
-  { href: "/", icon: LayoutDashboard, label: "Dashboard" },
-  { href: "/history", icon: History, label: "Job History" },
-  { href: "/knowledge", icon: BookOpen, label: "Knowledge Base" },
-  { href: "/benchmark", icon: BarChart2, label: "Benchmarks" },
+const NAV = [
+  { href: "/",         icon: Zap,             label: "Generate" },
+  { href: "/history",  icon: History,          label: "History" },
+  { href: "/knowledge",icon: Database,         label: "Knowledge" },
+  { href: "/settings", icon: Settings,         label: "Settings" },
 ];
 
-const WORKFLOWS = [
-  { id: "basic", icon: Cpu, label: "Basic LLM", color: "#8b949e" },
-  { id: "rag", icon: Zap, label: "Standard RAG", color: "#58a6ff" },
-  { id: "advanced", icon: GitBranch, label: "Advanced RAG", color: "#bc8cff" },
-  { id: "secure", icon: Shield, label: "Secure RAG", color: "#3fb950" },
-  { id: "hitl", icon: HardHat, label: "HitL RAG", color: "#ffa657" },
-];
-
-interface SidebarProps {
-  selectedWorkflow: string;
-  onWorkflowChange: (id: string) => void;
+interface Props {
   chunkCount?: number;
+  awsConnected?: boolean;
+  applyPaused?: boolean;
+  onTogglePause?: () => void;
+  selectedWorkflow?: string;
+  onWorkflowChange?: (id: string) => void;
 }
 
-export function Sidebar({ selectedWorkflow, onWorkflowChange, chunkCount }: SidebarProps) {
-  const pathname = usePathname();
+export function Sidebar({ chunkCount, awsConnected = false, applyPaused = false, onTogglePause, selectedWorkflow, onWorkflowChange }: Props) {
+  const path = usePathname();
 
   return (
     <aside className={styles.sidebar}>
+      {/* Logo */}
       <div className={styles.logo}>
-        <div className={styles.logoIcon}>🏗️</div>
-        <div>
-          <div className={styles.logoTitle}>Terraform Architect</div>
-          <div className={styles.logoSub}>AI Infrastructure Platform</div>
+        <div className={styles.logoIcon}>
+          <Zap size={16} className={styles.logoZap} />
+        </div>
+        <div className={styles.logoText}>
+          <span className={styles.logoName}>TerraForge</span>
+          <span className={styles.logoTag}>IaC Agent</span>
         </div>
       </div>
 
+      {/* Nav */}
       <nav className={styles.nav}>
-        {NAV_LINKS.map(({ href, icon: Icon, label }) => (
-          <Link
-            key={href}
-            href={href}
-            className={`${styles.navLink} ${pathname === href ? styles.active : ""}`}
-          >
-            <Icon size={16} />
-            {label}
-          </Link>
-        ))}
+        {NAV.map(({ href, icon: Icon, label }) => {
+          const active = path === href;
+          return (
+            <Link key={href} href={href} className={`${styles.navItem} ${active ? styles.navActive : ""}`}>
+              <Icon size={15} className={styles.navIcon} />
+              <span className={styles.navLabel}>{label}</span>
+              {active && <span className={styles.navActiveDot} />}
+            </Link>
+          );
+        })}
       </nav>
 
-      <div className={styles.section}>
-        <div className={styles.sectionLabel}>Workflow</div>
-        {WORKFLOWS.map(({ id, icon: Icon, label, color }) => (
-          <button
-            key={id}
-            className={`${styles.workflowBtn} ${selectedWorkflow === id ? styles.workflowActive : ""}`}
-            onClick={() => onWorkflowChange(id)}
-          >
-            <Icon size={14} style={{ color }} />
-            {label}
-          </button>
-        ))}
+      <div className={styles.spacer} />
+
+      {/* Status section */}
+      <div className={styles.statusSection}>
+        {/* AWS status */}
+        <div className={styles.statusRow}>
+          <span className={`dot ${awsConnected ? "dot-green" : "dot-dim"} ${awsConnected ? "dot-pulse" : ""}`} />
+          <span className={styles.statusLabel}>
+            {awsConnected ? "AWS Connected" : "AWS Not Configured"}
+          </span>
+        </div>
+
+        {/* KB chunks */}
+        {chunkCount !== undefined && (
+          <div className={styles.statusRow}>
+            <span className="dot dot-blue" />
+            <span className={styles.statusLabel}>
+              {chunkCount.toLocaleString()} chunks indexed
+            </span>
+          </div>
+        )}
+
+        {/* Circuit breaker */}
+        <div className={styles.circuitBreaker}>
+          <Shield size={12} className={styles.shieldIcon} style={{ color: applyPaused ? "var(--red)" : "var(--text-muted)" }} />
+          <span className={styles.statusLabel} style={{ color: applyPaused ? "var(--red)" : "var(--text-muted)" }}>
+            {applyPaused ? "Apply Paused" : "Apply Enabled"}
+          </span>
+          {onTogglePause && (
+            <button className={styles.pauseToggle} onClick={onTogglePause} title="Toggle circuit breaker">
+              {applyPaused ? "Resume" : "Pause"}
+            </button>
+          )}
+        </div>
       </div>
 
-      {chunkCount !== undefined && (
-        <div className={styles.footer}>
-          <div className={styles.footerStat}>
-            <span className={styles.footerLabel}>Knowledge Base</span>
-            <span className={styles.footerValue}>{chunkCount.toLocaleString()} chunks</span>
-          </div>
-          <div className={styles.footerStat}>
-            <span className={styles.footerLabel}>AWS Provider Docs</span>
-            <span className={styles.footerValue}>1,696 docs</span>
-          </div>
-        </div>
-      )}
+      {/* Version */}
+      <div className={styles.version}>v2.0 · apply pipeline</div>
     </aside>
   );
 }

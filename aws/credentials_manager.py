@@ -113,6 +113,14 @@ def assume_role(
         ValueError: if Role ARN is not configured or invalid.
         RuntimeError: if AssumeRole call fails (wrong trust policy, etc.)
     """
+    if os.getenv("MOCK_AWS") == "true":
+        return {
+            "AWS_ACCESS_KEY_ID": "mock-access-key",
+            "AWS_SECRET_ACCESS_KEY": "mock-secret-key",
+            "AWS_SESSION_TOKEN": "mock-session-token",
+            "_expires_at": "2099-12-31T23:59:59Z",
+        }
+
     role_arn     = role_arn     or get_role_arn()
     external_id  = external_id  or get_or_create_external_id()
 
@@ -162,6 +170,15 @@ def test_assume_role() -> dict:
         {"ok": True, "account": "...", "arn": "...", "user_id": "..."}
     or raises RuntimeError with a human-readable message.
     """
+    if os.getenv("MOCK_AWS") == "true":
+        return {
+            "ok": True,
+            "account": "123456789012",
+            "arn": "arn:aws:iam::123456789012:role/MockTerraForgeRole",
+            "user_id": "MOCK-USER-ID",
+            "expires_at": "2099-12-31T23:59:59Z",
+        }
+
     cred_env = assume_role()
     env = {k: v for k, v in cred_env.items() if not k.startswith("_")}
 

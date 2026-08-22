@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Download, FolderDown } from "lucide-react";
+import { Download, FolderDown, FileCode2, Copy, Check } from "lucide-react";
 import styles from "./TerraformViewer.module.css";
 
 interface Props {
@@ -11,10 +11,17 @@ interface Props {
 export function TerraformViewer({ files }: Props) {
   const fileNames = Object.keys(files);
   const [active, setActive] = useState(fileNames[0] ?? "");
+  const [copied, setCopied] = useState(false);
 
   if (fileNames.length === 0) return null;
 
   const activeCode = files[active] ?? "";
+
+  function handleCopy() {
+    navigator.clipboard.writeText(activeCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
 
   function downloadFile(name: string, code: string) {
     const blob = new Blob([code], { type: "text/plain" });
@@ -27,7 +34,6 @@ export function TerraformViewer({ files }: Props) {
   }
 
   function downloadAll() {
-    // Build a simple text bundle with file separators so it's one download
     const bundle = fileNames
       .map((n) => `# ===== ${n} =====\n\n${files[n]}`)
       .join("\n\n");
@@ -35,14 +41,15 @@ export function TerraformViewer({ files }: Props) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "terraform-output.tf";
+    a.download = "terraform-bundle.tf";
     a.click();
     URL.revokeObjectURL(url);
   }
 
   return (
     <div className={styles.wrapper}>
-      <div className={styles.tabBar}>
+      {/* Header bar */}
+      <div className={styles.header}>
         <div className={styles.tabs}>
           {fileNames.map((name) => (
             <button
@@ -50,30 +57,34 @@ export function TerraformViewer({ files }: Props) {
               className={`${styles.tab} ${name === active ? styles.tabActive : ""}`}
               onClick={() => setActive(name)}
             >
-              📄 {name}
+              <FileCode2 size={14} className={styles.tabIcon} />
+              {name}
             </button>
           ))}
         </div>
         <div className={styles.actions}>
-          <button
-            className={styles.downloadBtn}
-            onClick={() => downloadFile(active, activeCode)}
-            title={`Download ${active}`}
-          >
-            <Download size={13} /> {active}
+          <button className={styles.actionBtn} onClick={handleCopy} title="Copy code">
+            {copied ? <Check size={14} className={styles.copiedIcon} /> : <Copy size={14} />}
+          </button>
+          <button className={styles.actionBtn} onClick={() => downloadFile(active, activeCode)} title="Download current file">
+            <Download size={14} />
           </button>
           {fileNames.length > 1 && (
-            <button
-              className={`${styles.downloadBtn} ${styles.downloadAllBtn}`}
-              onClick={downloadAll}
-              title="Download all files bundled"
-            >
-              <FolderDown size={13} /> Download All ({fileNames.length} files)
+            <button className={`${styles.actionBtn} ${styles.downloadAllBtn}`} onClick={downloadAll} title="Download all files">
+              <FolderDown size={14} /> <span>Download All</span>
             </button>
           )}
         </div>
       </div>
-      <div className={styles.codeWrapper}>
+
+      {/* Code Area */}
+      <div className={styles.codeContainer}>
+        {/* Fake line numbers for aesthetics */}
+        <div className={styles.lineNumbers} aria-hidden="true">
+          {activeCode.split('\n').map((_, i) => (
+            <div key={i} className={styles.lineNumber}>{i + 1}</div>
+          ))}
+        </div>
         <pre className={styles.code}>
           <code>{activeCode}</code>
         </pre>
