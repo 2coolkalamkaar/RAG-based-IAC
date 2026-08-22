@@ -182,3 +182,14 @@ textarea.input { resize: vertical; min-height: 100px; }
   border-top: 1px solid var(--border-subtle);
   margin: 1.5rem 0;
 }
+
+/* Animations */
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

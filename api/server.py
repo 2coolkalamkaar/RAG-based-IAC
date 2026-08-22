@@ -11,15 +11,21 @@ import json
 import uuid
 import asyncio
 import importlib
+import queue
+import threading
 from datetime import datetime, timezone
 from typing import AsyncGenerator
+from langchain_core.callbacks.base import BaseCallbackHandler
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from db.job_store import init_db, save_job, load_all_jobs, load_job, delete_job
+from db.job_store import (
+    init_db, save_job, load_all_jobs, load_job, delete_job,
+    is_apply_paused, set_apply_paused, update_plan_summary,
+)
 from data.custom_doc_injector import inject_document, list_internal_docs
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -87,6 +93,13 @@ def _sse(event: str, data: dict) -> str:
     return f"data: {json.dumps({'event': event, **data})}\n\n"
 
 
+class StreamingQueueCallbackHandler(BaseCallbackHandler):
+    def __init__(self, q: queue.Queue):
+        self.q = q
+        
+    def on_llm_new_token(self, token: str, **kwargs) -> None:
+        self.q.put({"type": "token", "content": token})
+
 async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncGenerator[str, None]:
     module_path = WORKFLOW_MODULES.get(workflow)
     if not module_path:
@@ -100,8 +113,11 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
         yield _sse("error", {"message": f"Failed to load workflow: {e}"})
         return
 
+    q = queue.Queue()
+    handler = StreamingQueueCallbackHandler(q)
+
     has_config = hasattr(mod, "memory") or workflow in ("hitl", "advanced", "secure", "rag")
-    config = {"configurable": {"thread_id": thread_id}} if has_config else None
+    config = {"configurable": {"thread_id": thread_id}, "callbacks": [handler]} if has_config else {"callbacks": [handler]}
 
     initial_state = {
         "user_request": prompt,
@@ -119,22 +135,59 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
         "trust_label": "",
         "trust_factors": {},
         "trust_explanation": "",
+        # Phase 1: workspace + job identity
+        "job_id":           thread_id,
+        "workspace_path":   "",
+        # Phase 3/3.5: plan + guard fields
+        "plan_json":              {},
+        "plan_summary":           {},
+        "cost_estimate_monthly":  0.0,
+        "blast_radius_passed":    True,
+        "cost_ceiling_passed":    True,
+        # Phase 4: apply
+        "apply_status":   "",
+        "apply_outputs":  {},
+        # HitL fields
+        "hitl_action":  "",
+        "patch_request": "",
+        "upload_mode":   False,
+        "resource_integrity_passed": True,
     }
 
     final_state = initial_state.copy()
 
+    def run_graph():
+        try:
+            stream_gen = agent_app.stream(initial_state, config=config)
+            for event in stream_gen:
+                q.put({"type": "node_update", "event": event})
+            q.put({"type": "done"})
+        except Exception as e:
+            q.put({"type": "error", "error": str(e)})
+
+    thread = threading.Thread(target=run_graph)
+    thread.start()
+
     try:
-        stream_gen = agent_app.stream(initial_state, config=config) if config else agent_app.stream(initial_state)
+        while True:
+            item = await asyncio.to_thread(q.get)
+            if item["type"] == "done":
+                break
+            elif item["type"] == "error":
+                yield _sse("error", {"message": item["error"]})
+                break
+            elif item["type"] == "token":
+                yield _sse("code_stream", {"chunk": item["content"]})
+            elif item["type"] == "node_update":
+                event = item["event"]
+                for node_name, state_update in event.items():
+                    final_state.update(state_update)
 
-        for event in stream_gen:
-            for node_name, state_update in event.items():
-                final_state.update(state_update)
-
-                # Node started
-                yield _sse("node_update", {
-                    "node": node_name,
-                    "status": "running",
-                })
+                    # Node started
+                    yield _sse("node_update", {
+                        "node": node_name,
+                        "status": "running",
+                    })
 
                 # Enriched events per node
                 if node_name == "Retriever_Node":
@@ -169,6 +222,34 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
                         "retry_count": state_update.get("retry_count", 1),
                     })
 
+                elif node_name == "Plan_Node":
+                    plan_summary = state_update.get("plan_summary", {})
+                    cost_est     = state_update.get("cost_estimate_monthly", 0.0)
+                    blast_ok     = state_update.get("blast_radius_passed", True)
+                    cost_ok      = state_update.get("cost_ceiling_passed", True)
+                    yield _sse("plan_preview", {
+                        "node":                  node_name,
+                        "status":                "done" if blast_ok and cost_ok else "warning",
+                        "plan_summary":          plan_summary,
+                        "cost_estimate_monthly": cost_est,
+                        "blast_radius_passed":   blast_ok,
+                        "cost_ceiling_passed":   cost_ok,
+                    })
+
+                elif node_name == "Apply_Node":
+                    apply_status = state_update.get("apply_status", "")
+                    yield _sse("apply_result", {
+                        "node":         node_name,
+                        "status":       apply_status,
+                        "apply_outputs": state_update.get("apply_outputs", {}),
+                    })
+
+                elif node_name == "Destroy_Node":
+                    yield _sse("destroy_result", {
+                        "node":   node_name,
+                        "status": state_update.get("apply_status", ""),
+                    })
+
                 elif node_name == "Trust_Assessor_Node":
                     yield _sse("trust_score", {
                         "node": node_name,
@@ -189,8 +270,6 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
 
                 else:
                     yield _sse("node_update", {"node": node_name, "status": "done"})
-
-                await asyncio.sleep(0)  # Yield control for async streaming
 
         # Final state
         if config:
@@ -231,9 +310,10 @@ async def run_workflow(req: RunRequest):
 class HitLAction(BaseModel):
     thread_id: str
     workflow: str
-    action: str          # "approve" | "patch"
+    action: str          # "approve" | "patch" | "apply" | "destroy"
     patch_request: str = ""
     prompt: str = ""     # original prompt for job saving
+    override_confirmed: bool = False  # typed confirmation for flagged applies
 
 
 @app.post("/api/hitl/action")
@@ -246,14 +326,33 @@ def hitl_action(req: HitLAction):
     agent_app = mod.app
     config = {"configurable": {"thread_id": req.thread_id}}
 
+    # Check circuit breaker for apply/destroy actions
+    if req.action in ("apply", "destroy") and is_apply_paused():
+        raise HTTPException(
+            status_code=503,
+            detail="Apply is globally paused. Use /api/admin/pause to re-enable."
+        )
+
+    # Check blast-radius override confirmation for flagged applies
+    if req.action == "apply":
+        current_state = agent_app.get_state(config).values
+        blast_ok = current_state.get("blast_radius_passed", True)
+        cost_ok  = current_state.get("cost_ceiling_passed", True)
+        if (not blast_ok or not cost_ok) and not req.override_confirmed:
+            raise HTTPException(
+                status_code=422,
+                detail="Blast-radius or cost guard failed. Set override_confirmed=true to proceed."
+            )
+
     agent_app.invoke(
         Command(resume={"hitl_action": req.action, "patch_request": req.patch_request}),
         config=config,
     )
 
-    # If approved, save to job store
-    if req.action == "approve":
-        final_state = agent_app.get_state(config).values
+    final_state = agent_app.get_state(config).values
+
+    # Persist job on approve or apply
+    if req.action in ("approve", "apply"):
         save_job(
             thread_id=req.thread_id,
             prompt=req.prompt,
@@ -261,9 +360,25 @@ def hitl_action(req: HitLAction):
             trust_score=final_state.get("trust_score"),
             trust_label=final_state.get("trust_label"),
             files=final_state.get("terraform_code", {}),
+            workspace_path=final_state.get("workspace_path"),
         )
+        # Persist plan summary if available
+        if final_state.get("plan_summary"):
+            from db.job_store import update_plan_summary
+            # Get job by thread_id
+            jobs = load_all_jobs(limit=1)
+            if jobs:
+                update_plan_summary(
+                    jobs[0]["id"],
+                    final_state.get("plan_summary", {}),
+                    final_state.get("cost_estimate_monthly", 0.0),
+                )
 
-    return {"status": "ok", "action": req.action}
+    return {
+        "status": "ok",
+        "action": req.action,
+        "apply_status": final_state.get("apply_status", ""),
+    }
 
 
 # ── Job History ───────────────────────────────────────────────────────────────
@@ -286,6 +401,54 @@ def remove_job(job_id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"status": "deleted"}
+
+
+# ── Admin: Circuit Breaker ────────────────────────────────────────────────────
+@app.get("/api/admin/status")
+def admin_status():
+    return {
+        "apply_paused": is_apply_paused(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/api/admin/pause")
+def admin_pause(pause: bool = True):
+    set_apply_paused(pause)
+    return {
+        "apply_paused": pause,
+        "message": "Apply globally paused." if pause else "Apply re-enabled.",
+    }
+
+
+# ── Settings: AWS Credentials ─────────────────────────────────────────────────
+class CredentialsRequest(BaseModel):
+    role_arn: str
+
+
+@app.get("/api/settings/credentials")
+def get_credentials():
+    from aws.credentials_manager import get_credentials_status
+    return get_credentials_status()
+
+
+@app.post("/api/settings/credentials")
+def save_credentials(req: CredentialsRequest):
+    from aws.credentials_manager import validate_role_arn, save_role_arn
+    if not validate_role_arn(req.role_arn):
+        raise HTTPException(status_code=400, detail="Invalid Role ARN format.")
+    save_role_arn(req.role_arn)
+    return {"status": "saved", "role_arn": req.role_arn}
+
+
+@app.post("/api/settings/credentials/test")
+def test_credentials():
+    from aws.credentials_manager import test_assume_role
+    try:
+        result = test_assume_role()
+        return result
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ── Custom Doc Upload ─────────────────────────────────────────────────────────

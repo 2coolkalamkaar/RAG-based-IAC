@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, History, BookOpen, Cpu, Shield, Zap, GitBranch, HardHat } from "lucide-react";
+import { LayoutDashboard, History, BookOpen, Cpu, Shield, Zap, GitBranch, HardHat, BarChart2 } from "lucide-react";
 import styles from "./Sidebar.module.css";
 
 const NAV_LINKS = [
   { href: "/", icon: LayoutDashboard, label: "Dashboard" },
   { href: "/history", icon: History, label: "Job History" },
   { href: "/knowledge", icon: BookOpen, label: "Knowledge Base" },
+  { href: "/benchmark", icon: BarChart2, label: "Benchmarks" },
 ];
 
 const WORKFLOWS = [

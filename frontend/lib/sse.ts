@@ -9,6 +9,7 @@ export type SSEEvent =
   | { event: "trust_score"; node: string; status: string; score: number; label: string; factors: Record<string, number>; explanation: string }
   | { event: "hitl_pause"; node: string; status: string; thread_id: string }
   | { event: "complete"; files: Record<string, string>; citations: string[]; trust_score: number; trust_label: string; trust_factors: Record<string, number>; trust_explanation: string; cost_estimate: string }
+  | { event: "code_stream"; chunk: string }
   | { event: "error"; message: string };
 
 interface UseSSEStreamOptions {

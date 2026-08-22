@@ -38,6 +38,9 @@ export default function DashboardPage() {
   const [hitlLoading, setHitlLoading] = useState(false);
   const [threadId, setThreadId] = useState<string>(() => crypto.randomUUID());
   const [activePrompt, setActivePrompt] = useState("");
+  const [costEstimate, setCostEstimate] = useState("");
+  const [totalRetries, setTotalRetries] = useState(0);
+  const [streamingCode, setStreamingCode] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -54,6 +57,7 @@ export default function DashboardPage() {
     );
   }, []);
 
+
   const handleEvent = useCallback((ev: SSEEvent) => {
     if (ev.event === "node_update") {
       updateStage(ev.node, ev.status as Stage["status"]);
@@ -61,6 +65,9 @@ export default function DashboardPage() {
         running: "info", done: "ok", warning: "warn", failed: "err", paused: "warn"
       };
       addLog(`${ev.node.replace("_Node","")}: ${ev.status}`, levelMap[ev.status] ?? "info");
+      // Track retries from Fixer node events
+      const retryCount = (ev as SSEEvent & { retry_count?: number }).retry_count;
+      if (retryCount) setTotalRetries((prev: number) => Math.max(prev, retryCount));
     } else if (ev.event === "trust_score") {
       updateStage(ev.node, "done");
       setTrust({ score: ev.score, label: ev.label, factors: ev.factors, explanation: ev.explanation });
@@ -72,10 +79,14 @@ export default function DashboardPage() {
     } else if (ev.event === "complete") {
       setFiles(ev.files ?? {});
       setCitations(ev.citations ?? []);
+      if (ev.cost_estimate) setCostEstimate(ev.cost_estimate);
       if (ev.trust_score && !trust) {
         setTrust({ score: ev.trust_score, label: ev.trust_label, factors: ev.trust_factors, explanation: ev.trust_explanation });
       }
       addLog("Pipeline complete!", "ok");
+    } else if (ev.event === "code_stream") {
+      const chunk = (ev as SSEEvent & { chunk?: string }).chunk;
+      if (chunk) setStreamingCode((prev) => prev + chunk);
     } else if (ev.event === "error") {
       addLog(`Error: ${ev.message}`, "err");
     }
@@ -85,6 +96,7 @@ export default function DashboardPage() {
     onEvent: handleEvent,
     onDone: () => setRunning(false),
   });
+
 
   function handleWorkflowChange(id: string) {
     setWorkflow(id);
@@ -98,6 +110,9 @@ export default function DashboardPage() {
     setTrust(null);
     setCitations([]);
     setHitlPaused(false);
+    setCostEstimate("");
+    setTotalRetries(0);
+    setStreamingCode("");
     setStages((prev) => prev.map((s) => ({ ...s, status: "idle" })));
   }
 
@@ -134,6 +149,13 @@ export default function DashboardPage() {
   }
 
   const showResult = Object.keys(files).length > 0;
+  const hasStarted = running || logs.length > 0 || showResult;
+
+  const EXAMPLE_PROMPTS = [
+    { label: "3-Tier Web App", prompt: "Deploy a highly-available 3-tier architecture with a VPC, public subnet for a web EC2 instance, private subnet for an app EC2 instance, and an RDS MySQL database with multi-AZ." },
+    { label: "EKS + IAM", prompt: "Provision an AWS EKS cluster with a dedicated IAM role using the AmazonEKSClusterPolicy, inside a new VPC with two subnets across different availability zones." },
+    { label: "Terraform Remote State", prompt: "Set up a Terraform remote state backend using an S3 bucket with versioning and AES-256 encryption, and a DynamoDB table with a LockID hash key for state locking." },
+  ];
 
   return (
     <div className="app-layout">
@@ -157,6 +179,24 @@ export default function DashboardPage() {
 
         <LogTerminal entries={logs} />
 
+        {!hasStarted && (
+          <div className={styles.emptyState}>
+            <div className={styles.emptyTitle}>Try an example</div>
+            <div className={styles.emptyCards}>
+              {EXAMPLE_PROMPTS.map((ex) => (
+                <button
+                  key={ex.label}
+                  className={styles.exampleCard}
+                  onClick={() => setPrompt(ex.prompt)}
+                >
+                  <span className={styles.exampleLabel}>{ex.label}</span>
+                  <span className={styles.examplePrompt}>{ex.prompt}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {hitlPaused && (
           <>
             <TerraformViewer files={files} />
@@ -172,10 +212,29 @@ export default function DashboardPage() {
           </>
         )}
 
+        {(streamingCode && !showResult && !hitlPaused) && (
+          <div className="animate-pulse">
+            <TerraformViewer files={{ "Generating...": streamingCode + " ▋" }} />
+          </div>
+        )}
+
         {showResult && !hitlPaused && (
           <>
             {trust && <TrustScoreCard data={trust} />}
             <TerraformViewer files={files} />
+            {(costEstimate || totalRetries > 0) && (
+              <div className={styles.runMeta}>
+                {costEstimate && (
+                  <span className={`badge badge-purple ${styles.metaBadge}`}>💰 {costEstimate}</span>
+                )}
+                {totalRetries > 0 && (
+                  <span className={`badge badge-yellow ${styles.metaBadge}`}>🔧 {totalRetries} self-heal {totalRetries === 1 ? "retry" : "retries"}</span>
+                )}
+                {totalRetries === 0 && (
+                  <span className={`badge badge-green ${styles.metaBadge}`}>✅ Generated first-try</span>
+                )}
+              </div>
+            )}
             {citations.length > 0 && (
               <div className={styles.citations}>
                 <div className={styles.citationsLabel}>📚 Sources Used</div>

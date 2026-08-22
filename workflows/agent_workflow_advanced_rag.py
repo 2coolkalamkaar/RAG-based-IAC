@@ -114,7 +114,7 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 # Initialize the LLM
-llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.2)
+llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.2, streaming=True)
 mq_llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.0)
 
 # --- 2. Define the Nodes (Workers) ---
@@ -251,7 +251,8 @@ def retriever_node(state: AgentState):
             "avg_reranker_score":       0.0,
         }
 
-def architect_node(state: AgentState):
+from langchain_core.runnables.config import RunnableConfig
+def architect_node(state: AgentState, config: RunnableConfig):
     print("--- ARCHITECT NODE ---")
     user_request = state.get("user_request", "")
     context = state.get("retrieved_context", "")
@@ -298,7 +299,7 @@ def architect_node(state: AgentState):
     ])
     
     chain = prompt | llm
-    response = chain.invoke({"request": user_request, "context": context, "history": history})
+    response = chain.invoke({"request": user_request, "context": context, "history": history}, config=config)
     
     files = parse_terraform_code(response.content)
     
@@ -435,8 +436,8 @@ def _build_trust_explanation(
     elif retrieval_sim >= 0.50:
         parts.append(
             f"The knowledge base had moderate coverage (retrieval similarity: {r_pct}%). "
-            f"Some resources in the request — such as niche Route\u202053 or multi-env "
-            f"constructs — may have limited documentation in the indexed sources, "
+            f"Some specific resources in the request may have limited "
+            f"documentation in the indexed sources, "
             f"causing the Architect to rely more on parametric knowledge."
         )
     else:
@@ -588,7 +589,6 @@ def cost_estimator_node(state: AgentState):
     Runs Infracost to calculate the estimated monthly cost of the generated infrastructure.
     """
     print("--- COST ESTIMATOR NODE ---")
-    return {"cost_estimate": "Skipped for benchmarking"}
     files = state.get("terraform_code", {})
     if not files:
         return {"cost_estimate": "No Terraform code to estimate."}
