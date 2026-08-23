@@ -196,7 +196,7 @@ export default function HistoryPage() {
                   }} />
                 )}
 
-                <TerraformViewer files={selected.files} />
+                <TerraformViewer files={selected.files} resourceCitations={selected.resource_citations} />
               </div>
             )}
           </div>

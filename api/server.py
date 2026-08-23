@@ -305,6 +305,7 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
                         "thread_id": thread_id,
                         "files": final_state.get("terraform_code", {}),
                         "citations": final_state.get("citations", []),
+                        "resource_citations": final_state.get("resource_citations", {}),
                     })
                     return
             except Exception:
@@ -314,6 +315,7 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
         yield _sse("complete", {
             "files": files,
             "citations": final_state.get("citations", []),
+            "resource_citations": final_state.get("resource_citations", {}),
             "trust_score": final_state.get("trust_score", 0.0),
             "trust_label": final_state.get("trust_label", ""),
             "trust_factors": final_state.get("trust_factors", {}),
@@ -394,6 +396,7 @@ def hitl_action(req: HitLAction):
             trust_factors=final_state.get("trust_factors"),
             files=final_state.get("terraform_code", {}),
             workspace_path=final_state.get("workspace_path"),
+            resource_citations=final_state.get("resource_citations", {}),
         )
         # Persist plan summary if available
         if final_state.get("plan_summary"):
@@ -412,6 +415,8 @@ def hitl_action(req: HitLAction):
         "status": "ok",
         "action": req.action,
         "apply_status": final_state.get("apply_status", ""),
+        "files": final_state.get("terraform_code", {}),
+        "resource_citations": final_state.get("resource_citations", {}),
     }
 
 

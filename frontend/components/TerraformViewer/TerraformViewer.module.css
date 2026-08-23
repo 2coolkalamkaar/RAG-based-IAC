@@ -139,3 +139,24 @@
 
 /* Very basic syntax highlighting simulation via CSS child selectors if needed,
    but standard monospace looks clean enough for this viewer */
+
+/* ── Per-resource citation hover (Phase 5) ── */
+.citedLine {
+  position: relative;
+  cursor: help;
+  border-radius: 4px;
+  margin: 0 -0.4rem;
+  padding: 0 0.4rem;
+  transition: background 0.15s;
+}
+.citedLine:hover {
+  background: rgba(79, 158, 255, 0.12);
+}
+.citationBadge {
+  margin-left: 0.6rem;
+  font-size: 0.7rem;
+  font-family: var(--font-sans);
+  color: var(--blue);
+  opacity: 0.75;
+  user-select: none;
+}

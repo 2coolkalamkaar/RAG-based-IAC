@@ -38,6 +38,8 @@ class AgentState(TypedDict):
     user_request:      str
     retrieved_context: str
     citations:         list[str]
+    citation_details:  list[Dict]   # [{"source": ..., "resource_name": ...}, ...] — raw per-chunk metadata
+    resource_citations: Dict[str, list]  # {"aws_s3_bucket": ["s3_bucket.html.markdown"], ...}
     terraform_code:    Dict[str, str]
     validation_errors: str
     is_valid:          bool
@@ -101,6 +103,33 @@ def extract_resource_types(files: dict) -> set[str]:
         for m in matches:
             types.add(m)
     return types
+
+
+def build_resource_citations(files: dict, citation_details: list[dict]) -> dict[str, list[str]]:
+    """
+    Deterministically map each generated Terraform resource TYPE to the doc source(s)
+    that documented it, by matching against each retrieved chunk's `resource_name`
+    metadata (derived from the AWS provider doc filename — see `data/etl_pipeline.py`).
+
+    Pure lookup, no LLM involved — it can only cite a doc that was actually retrieved,
+    it can't hallucinate a justification the way asking the model to self-report would.
+    """
+    mapping: dict[str, list[str]] = {}
+    for rtype in extract_resource_types(files):
+        bare = rtype[4:] if rtype.startswith("aws_") else rtype  # "aws_s3_bucket" -> "s3_bucket"
+        matches: list[str] = []
+        for cd in citation_details:
+            resource_name = cd.get("resource_name", "")
+            if not resource_name:
+                continue
+            if resource_name == bare or resource_name in bare or bare in resource_name:
+                src = cd.get("source", "")
+                label = Path(src).name if src else ""
+                if label and label not in matches:
+                    matches.append(label)
+        if matches:
+            mapping[rtype] = matches
+    return mapping
 
 
 def validate_terraform_code(
@@ -314,10 +343,17 @@ def retriever_node(state: AgentState):
         docs = [d for d in docs if d.metadata.get("source", "") not in EXCLUDED_SOURCES]
         context = "\n\n".join([doc.page_content for doc in docs])
         citations = []
+        citation_details = []
+        seen_detail = set()
         for doc in docs:
             src = doc.metadata.get("source", "Unknown/Local DB Source")
             if src not in citations:
                 citations.append(src)
+            resource_name = doc.metadata.get("resource_name", "")
+            detail_key = (src, resource_name)
+            if detail_key not in seen_detail:
+                seen_detail.add(detail_key)
+                citation_details.append({"source": src, "resource_name": resource_name})
         print(f" Retrieved {len(docs)} highly accurate documents.")
 
         reranker_scores_raw = [doc.metadata["relevance_score"] for doc in docs if "relevance_score" in doc.metadata]
@@ -334,6 +370,7 @@ def retriever_node(state: AgentState):
         return {
             "retrieved_context": context,
             "citations": citations,
+            "citation_details": citation_details,
             "docs_retrieved": len(docs),
             "avg_retrieval_similarity": round(avg_similarity, 4),
             "avg_reranker_score": round(avg_reranker, 4),
@@ -343,6 +380,7 @@ def retriever_node(state: AgentState):
         return {
             "retrieved_context": "",
             "citations": [],
+            "citation_details": [],
             "avg_retrieval_similarity": 0.0,
             "avg_reranker_score": 0.0,
         }
@@ -414,11 +452,17 @@ def architect_node(state: AgentState, config: RunnableConfig):
     chain = prompt | llm
     response = chain.invoke({"request": user_request, "context": context, "history": history}, config=config)
     files = parse_terraform_code(response.content)
+    resource_citations = build_resource_citations(files, state.get("citation_details", []))
     new_messages = list(state.get("messages", [])) + [
         HumanMessage(content=user_request),
         AIMessage(content=response.content)
     ]
-    return {"terraform_code": files, "retry_count": 0, "messages": new_messages}
+    return {
+        "terraform_code": files,
+        "retry_count": 0,
+        "messages": new_messages,
+        "resource_citations": resource_citations,
+    }
 
 
 def validator_node(state: AgentState):
@@ -494,11 +538,13 @@ def fixer_node(state: AgentState):
             print(f"   ⚠️ WARNING: Fixer silently dropped resource types {missing_types}!")
             
     current_integrity = state.get("resource_integrity_passed", True)
-    
+    resource_citations = build_resource_citations(new_files, state.get("citation_details", []))
+
     return {
         "terraform_code": new_files,
         "retry_count": attempt,
         "resource_integrity_passed": current_integrity and integrity_passed,
+        "resource_citations": resource_citations,
         "messages": [AIMessage(content=response.content, name="Fixer_Node")]
     }
 
@@ -611,6 +657,7 @@ def hitl_node(state: AgentState):
     cost_estimate  = state.get("cost_estimate_monthly", 0.0)
     blast_ok       = state.get("blast_radius_passed", True)
     cost_ok        = state.get("cost_ceiling_passed", True)
+    resource_citations = state.get("resource_citations", {})
     # interrupt() surfaces the current code to the UI and suspends the graph.
     human_decision = interrupt({
         "terraform_code":     terraform_code,
@@ -618,6 +665,7 @@ def hitl_node(state: AgentState):
         "cost_estimate":      cost_estimate,
         "blast_radius_passed": blast_ok,
         "cost_ceiling_passed": cost_ok,
+        "resource_citations": resource_citations,
         "message": "Review the generated Terraform code. Approve, apply to AWS, or request changes."
     })
     # When the graph is resumed, human_decision will contain the UI-provided dict.
@@ -681,11 +729,14 @@ def patcher_node(state: AgentState):
         print("   ⚠️  Patcher returned no parseable files. Keeping existing code.")
         merged = files
 
+    resource_citations = build_resource_citations(merged, state.get("citation_details", []))
+
     return {
         "terraform_code": merged,
         "retry_count": 0,
         "hitl_action": "",
         "patch_request": "",
+        "resource_citations": resource_citations,
         "messages": [AIMessage(content=response.content, name="Patcher_Node")]
     }
 

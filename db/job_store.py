@@ -77,6 +77,7 @@ def init_db():
             ("plan_summary",   "TEXT"),
             ("cost_estimate",  "REAL"),
             ("trust_factors",  "TEXT"),  # v3
+            ("resource_citations", "TEXT"),  # v4 — {resource_type: [doc_source, ...]}
         ]:
             _add_column_if_missing(conn, col, col_type)
 
@@ -148,6 +149,7 @@ def save_job(
     trust_factors: dict | None,
     files: dict[str, str],
     workspace_path: str | None = None,
+    resource_citations: dict | None = None,
 ) -> str:
     """
     Persist an approved Terraform run.
@@ -160,6 +162,8 @@ def save_job(
         trust_label:    Human-readable label e.g. 'High Trust'.
         files:          Dict mapping filename -> HCL code.
         workspace_path: Absolute path to persistent workspace dir (optional).
+        resource_citations: {resource_type: [doc_source, ...]} — which KB doc(s)
+            justified each generated resource type (optional).
 
     Returns:
         The UUID of the newly created job.
@@ -179,14 +183,15 @@ def save_job(
             """
             INSERT INTO jobs
                 (id, thread_id, created_at, workflow, prompt, trust_score,
-                 trust_label, trust_factors, files_json, workspace_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 trust_label, trust_factors, files_json, workspace_path, resource_citations)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id, thread_id, now, workflow, prompt,
                 trust_score, trust_label,
                 json.dumps(trust_factors) if trust_factors else None,
                 json.dumps(files), workspace_path,
+                json.dumps(resource_citations) if resource_citations else None,
             ),
         )
         conn.commit()
@@ -268,6 +273,10 @@ def load_job(job_id: str) -> dict | None:
         result["apply_outputs"] = json.loads(result["apply_outputs"])
     if result.get("plan_summary"):
         result["plan_summary"] = json.loads(result["plan_summary"])
+    if result.get("resource_citations"):
+        result["resource_citations"] = json.loads(result["resource_citations"])
+    else:
+        result["resource_citations"] = {}
     return result
 
 

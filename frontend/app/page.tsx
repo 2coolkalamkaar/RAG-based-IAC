@@ -96,6 +96,7 @@ export default function DashboardPage() {
   const [files, setFiles]     = useState<Record<string, string>>({});
   const [trust, setTrust]     = useState<TrustData | null>(null);
   const [citations, setCitations] = useState<string[]>([]);
+  const [resourceCitations, setResourceCitations] = useState<Record<string, string[]>>({});
   const [hitlPaused, setHitlPaused] = useState(false);
   const [hitlLoading, setHitlLoading] = useState(false);
   const [threadId, setThreadId] = useState(() => crypto.randomUUID());
@@ -156,9 +157,10 @@ export default function DashboardPage() {
       setTrust({ score: ev.score, label: ev.label, factors: ev.factors, explanation: ev.explanation });
       addLog(`[Trust] ${ev.label} (${Math.round(ev.score * 100)}%)`, "ok");
     } else if (ev.event === "hitl_pause") {
-      const e = ev as SSEEvent & { files?: Record<string, string>; citations?: string[] };
+      const e = ev as SSEEvent & { files?: Record<string, string>; citations?: string[]; resource_citations?: Record<string, string[]> };
       if (e.files) setFiles(e.files);
       if (e.citations) setCitations(e.citations);
+      if (e.resource_citations) setResourceCitations(e.resource_citations);
       updateStage("HitL_Node", "paused");
       setHitlPaused(true);
       addLog("[HitL] Workflow paused — awaiting human review", "warn");
@@ -174,6 +176,7 @@ export default function DashboardPage() {
     } else if (ev.event === "complete") {
       setFiles(ev.files ?? {});
       setCitations(ev.citations ?? []);
+      setResourceCitations(ev.resource_citations ?? {});
       if (ev.trust_score && !trust) {
         setTrust({ score: ev.trust_score, label: ev.trust_label, factors: ev.trust_factors, explanation: ev.trust_explanation });
       }
@@ -193,7 +196,7 @@ export default function DashboardPage() {
   }
 
   function reset() {
-    setLogs([]); setFiles({}); setTrust(null); setCitations([]);
+    setLogs([]); setFiles({}); setTrust(null); setCitations([]); setResourceCitations({});
     setHitlPaused(false); setCostEstimate(0); setTotalRetries(0);
     setStreamingCode(""); setPlanSummary({}); setBlastOk(true);
     setCostOk(true); setApplyStatus("");
@@ -371,7 +374,7 @@ export default function DashboardPage() {
         {/* HitL panel + code when paused */}
         {hitlPaused && (
           <>
-            <TerraformViewer files={files} />
+            <TerraformViewer files={files} resourceCitations={resourceCitations} />
             {trust && <TrustScoreCard data={trust} />}
             <HitLPanel
               threadId={threadId}
@@ -393,7 +396,7 @@ export default function DashboardPage() {
         {showResult && !hitlPaused && (
           <>
             {trust && <TrustScoreCard data={trust} />}
-            <TerraformViewer files={files} />
+            <TerraformViewer files={files} resourceCitations={resourceCitations} />
 
             {/* Run metadata row */}
             <div className={styles.metaRow}>

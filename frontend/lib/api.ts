@@ -20,6 +20,7 @@ export interface JobDetail extends Job {
   apply_outputs?: Record<string, unknown>;
   plan_summary?: Record<string, unknown>;
   cost_estimate?: number;
+  resource_citations?: Record<string, string[]>;
 }
 
 export interface InternalDoc {

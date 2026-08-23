@@ -6,9 +6,14 @@ import styles from "./TerraformViewer.module.css";
 
 interface Props {
   files: Record<string, string>;
+  /** resource type (e.g. "aws_s3_bucket") -> doc source(s) that justified it */
+  resourceCitations?: Record<string, string[]>;
 }
 
-export function TerraformViewer({ files }: Props) {
+// Matches a resource declaration line: resource "aws_s3_bucket" "example" {
+const RESOURCE_LINE_RE = /^\s*resource\s+"([\w]+)"\s+"[\w-]+"\s*\{?\s*$/;
+
+export function TerraformViewer({ files, resourceCitations = {} }: Props) {
   const fileNames = Object.keys(files);
   const [active, setActive] = useState(fileNames[0] ?? "");
   const [copied, setCopied] = useState(false);
@@ -16,6 +21,7 @@ export function TerraformViewer({ files }: Props) {
   if (fileNames.length === 0) return null;
 
   const activeCode = files[active] ?? "";
+  const hasCitations = Object.keys(resourceCitations).length > 0;
 
   function handleCopy() {
     navigator.clipboard.writeText(activeCode);
@@ -86,7 +92,25 @@ export function TerraformViewer({ files }: Props) {
           ))}
         </div>
         <pre className={styles.code}>
-          <code>{activeCode}</code>
+          <code>
+            {activeCode.split("\n").map((line, i) => {
+              const match = hasCitations ? line.match(RESOURCE_LINE_RE) : null;
+              const sources = match ? resourceCitations[match[1]] : undefined;
+              if (!sources || sources.length === 0) {
+                return <div key={i}>{line || " "}</div>;
+              }
+              return (
+                <div
+                  key={i}
+                  className={styles.citedLine}
+                  title={`Justified by: ${sources.join(", ")}`}
+                >
+                  {line}
+                  <span className={styles.citationBadge}>📚 {sources.length}</span>
+                </div>
+              );
+            })}
+          </code>
         </pre>
       </div>
     </div>
