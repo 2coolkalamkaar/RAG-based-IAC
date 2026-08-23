@@ -162,10 +162,16 @@ def validate_terraform_code(
 
 
 # ─────────────────────────────────────────────────
-# 3. LLM Initialization
+# 3. LLM Initialization — single config dict, two temp variants
+#    One place to update model name, project ID, or location.
 # ─────────────────────────────────────────────────
-llm    = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.2, streaming=True)
-mq_llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.0)
+_VERTEX_CONFIG = dict(
+    model_name="gemini-2.5-pro",
+    project="project-036ddc82-f451-4fae-9e3",
+    location="us-central1",
+)
+llm    = ChatVertexAI(**_VERTEX_CONFIG, temperature=0.2, streaming=True)  # Architect / Fixer
+mq_llm = ChatVertexAI(**_VERTEX_CONFIG, temperature=0.0)                  # MultiQuery retrieval
 
 
 # ─────────────────────────────────────────────────
@@ -392,9 +398,14 @@ def architect_node(state: AgentState, config: RunnableConfig):
         f"{citation_text}\n"
     )
 
-    history = "\n".join([msg.content for msg in state.get("messages", []) if getattr(msg, "name", "") != "Fixer_Node"])
+    # Window to the last 8 non-Fixer messages to prevent token bloat across long patch sessions.
+    all_msgs   = [m for m in state.get("messages", []) if getattr(m, "name", "") != "Fixer_Node"]
+    recent_msgs = all_msgs[-8:]
+    history = "\n".join([m.content for m in recent_msgs])
     if not history:
         history = "None."
+    if len(all_msgs) > 8:
+        print(f"   [History] Windowed {len(all_msgs)} messages → last 8 to keep context tight.")
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),

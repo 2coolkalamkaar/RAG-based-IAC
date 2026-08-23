@@ -64,6 +64,21 @@ DB_PATH = str(Path(__file__).parent.parent / "chroma_db_terraform")
 def on_startup():
     init_db()
 
+    # Checkpoint the LangGraph SQLite WAL so state.db-wal doesn't grow unboundedly.
+    # This merges any pending WAL writes into the main DB file and resets the WAL
+    # to 0 bytes — keeps state reads fast and disk usage predictable.
+    import sqlite3
+    from pathlib import Path as _Path
+    state_db = _Path(__file__).parent.parent / "state.db"
+    if state_db.exists():
+        try:
+            with sqlite3.connect(str(state_db)) as _conn:
+                result = _conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                # result = (busy, log, checkpointed)
+                print(f"[Startup] state.db WAL checkpoint: busy={result[0]}, log={result[1]}, checkpointed={result[2]}")
+        except Exception as _e:
+            print(f"[Startup] WAL checkpoint skipped: {_e}")
+
 
 # ── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/api/health")
