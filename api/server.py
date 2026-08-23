@@ -503,6 +503,94 @@ async def upload_doc(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+
 @app.get("/api/docs/list")
 def list_docs(limit: int = 20):
     return {"docs": list_internal_docs(limit=limit)}
+
+
+# ── ETL Pipeline: Vector DB Sync ──────────────────────────────────────────────
+
+class ETLRequest(BaseModel):
+    full_rebuild: bool = False
+    skip_pull: bool = False
+
+
+@app.get("/api/etl/status")
+def etl_status():
+    """Return the ETL manifest (last run time, total indexed, provider version)."""
+    import json
+    from pathlib import Path as _P
+    manifest_path = _P("chroma_db_terraform") / "etl_manifest.json"
+    if not manifest_path.exists():
+        return {"status": "never_run", "manifest": None}
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        return {"status": "ok", "manifest": manifest}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+@app.post("/api/etl/run")
+def etl_run_sse(req: ETLRequest):
+    """
+    Stream ETL pipeline logs over SSE.
+    The ETL run happens in a background thread; each print() line is
+    captured and streamed as a 'log' event to the UI.
+    """
+    import sys
+    import io
+    import threading
+
+    log_queue: queue.Queue = queue.Queue()
+    done_event = threading.Event()
+
+    class _QueueWriter(io.TextIOBase):
+        """Redirect stdout into the SSE log queue."""
+        def write(self, msg: str):
+            if msg.strip():
+                log_queue.put(msg.rstrip())
+            return len(msg)
+        def flush(self):
+            pass
+
+    def _run_etl():
+        old_stdout = sys.stdout
+        sys.stdout = _QueueWriter()
+        try:
+            from data.etl_pipeline import run_etl
+            run_etl(
+                full_rebuild=req.full_rebuild,
+                dry_run=False,
+                skip_pull=req.skip_pull,
+            )
+            log_queue.put("__DONE__")
+        except Exception as exc:
+            log_queue.put(f"[ERROR] {exc}")
+            log_queue.put("__DONE__")
+        finally:
+            sys.stdout = old_stdout
+            done_event.set()
+
+    threading.Thread(target=_run_etl, daemon=True).start()
+
+    async def _stream():
+        while True:
+            try:
+                line = log_queue.get(timeout=0.1)
+                if line == "__DONE__":
+                    yield f"event: done\ndata: ETL pipeline complete\n\n"
+                    break
+                yield f"event: log\ndata: {json.dumps(line)}\n\n"
+            except queue.Empty:
+                yield f"event: ping\ndata: {{}}\n\n"
+            await asyncio.sleep(0.05)
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
