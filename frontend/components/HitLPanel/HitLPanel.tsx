@@ -3,9 +3,10 @@
 import { useState } from "react";
 import {
   CheckCircle2, XCircle, Pencil, Rocket, Trash2,
-  AlertTriangle, ShieldAlert, DollarSign, ChevronRight,
-  Loader2, Terminal
+  AlertTriangle, ShieldAlert, DollarSign, ChevronRight, ChevronDown,
+  Loader2, Terminal, Layers, Lightbulb
 } from "lucide-react";
+import { CostBreakdownItem } from "@/lib/sse";
 import styles from "./HitLPanel.module.css";
 
 interface PlanSummary {
@@ -22,6 +23,7 @@ interface Props {
   files: Record<string, string>;
   planSummary?: PlanSummary;
   costEstimate?: number;
+  costBreakdown?: CostBreakdownItem[];
   blastRadiusPassed?: boolean;
   costCeilingPassed?: boolean;
   onAction: (
@@ -40,6 +42,7 @@ export function HitLPanel({
   files,
   planSummary,
   costEstimate,
+  costBreakdown,
   blastRadiusPassed = true,
   costCeilingPassed = true,
   onAction,
@@ -50,6 +53,7 @@ export function HitLPanel({
   const [patchText, setPatchText] = useState("");
   const [confirmText, setConfirmText] = useState("");
   const [showConfirm, setShowConfirm] = useState(false);
+  const [showBreakdown, setShowBreakdown] = useState(false);
   const [pendingAction, setPendingAction] = useState<"apply" | "destroy" | null>(null);
 
   const fileCount = Object.keys(files).length;
@@ -76,6 +80,11 @@ export function HitLPanel({
   const applied   = applyStatus === "applied";
   const failed    = applyStatus === "failed";
   const destroyed = applyStatus === "destroyed";
+
+  const totalCost = costEstimate ?? 0;
+  const hourlyCost = (totalCost / 730).toFixed(3);
+  const paidCount = costBreakdown?.filter((c) => !c.is_free && c.monthly_cost > 0).length ?? 0;
+  const freeCount = costBreakdown?.filter((c) => c.is_free || c.monthly_cost === 0).length ?? 0;
 
   return (
     <div className={styles.panel}>
@@ -120,14 +129,80 @@ export function HitLPanel({
                 <span className={styles.statLabel}>destroy</span>
               </div>
             )}
-            {costEstimate !== undefined && costEstimate > 0 && (
-              <div className={`${styles.planStat} ${styles.statCost}`}>
+            {costEstimate !== undefined && (
+              <button
+                type="button"
+                className={`${styles.planStat} ${styles.statCost} ${styles.statCostBtn}`}
+                onClick={() => setShowBreakdown((prev) => !prev)}
+                title="Click to view itemized FinOps cost breakdown"
+              >
                 <DollarSign size={11} />
                 <span className={styles.statNum}>${costEstimate.toFixed(0)}</span>
                 <span className={styles.statLabel}>/mo est.</span>
-              </div>
+                <ChevronDown size={12} className={`${styles.chevronIcon} ${showBreakdown ? styles.chevronIconOpen : ""}`} />
+              </button>
             )}
           </div>
+
+          {/* Itemized Cost Breakdown Dropdown */}
+          {showBreakdown && (
+            <div className={styles.breakdownSection}>
+              <div className={styles.breakdownHeader}>
+                <div className={styles.breakdownTitle}>
+                  <Layers size={13} />
+                  <span>Itemized FinOps Cost Breakdown</span>
+                </div>
+                <div className={styles.breakdownRates}>
+                  Total: <strong>${totalCost.toFixed(2)}/mo</strong> (<strong>~${hourlyCost}/hr</strong>)
+                </div>
+              </div>
+
+              {costBreakdown && costBreakdown.length > 0 ? (
+                <table className={styles.breakdownTable}>
+                  <thead>
+                    <tr>
+                      <th>Resource Address</th>
+                      <th>Type</th>
+                      <th style={{ textAlign: "right" }}>Monthly Est.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {costBreakdown.map((item, idx) => (
+                      <tr key={idx}>
+                        <td>
+                          <div className={styles.resourceNameCell}>
+                            <span>{item.name}</span>
+                            {item.details && <span className={styles.resourceDetailText}>{item.details}</span>}
+                          </div>
+                        </td>
+                        <td>
+                          <span className={styles.typeTag}>{item.type}</span>
+                        </td>
+                        <td className={styles.costCell}>
+                          {item.monthly_cost > 0 ? (
+                            <span>${item.monthly_cost.toFixed(2)}/mo</span>
+                          ) : (
+                            <span className={styles.freeTag}>Free</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)", padding: "0.5rem 0" }}>
+                  Estimated total: <strong>${totalCost.toFixed(2)}/mo</strong> across {planSummary.create ?? 0} provisioned resource(s).
+                </div>
+              )}
+
+              <div className={styles.finopsTip}>
+                <Lightbulb size={13} style={{ flexShrink: 0 }} />
+                <span>
+                  <strong>FinOps Summary:</strong> {paidCount} billable resource{paidCount !== 1 ? "s" : ""}, {freeCount} free tier/included resource{freeCount !== 1 ? "s" : ""}. ManagedBy & JobID tags automatically assigned.
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Guard warnings */}
           {!blastRadiusPassed && (

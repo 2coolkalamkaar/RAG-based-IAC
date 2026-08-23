@@ -7,7 +7,7 @@ import { TrustScoreCard, TrustData } from "@/components/TrustScoreCard/TrustScor
 import { TerraformViewer } from "@/components/TerraformViewer/TerraformViewer";
 import { HitLPanel } from "@/components/HitLPanel/HitLPanel";
 import { LogTerminal, LogEntry } from "@/components/LogTerminal/LogTerminal";
-import { useSSEStream, SSEEvent } from "@/lib/sse";
+import { useSSEStream, SSEEvent, CostBreakdownItem } from "@/lib/sse";
 import { submitHitLAction, getHealth } from "@/lib/api";
 import {
   Zap, Send, RotateCcw, ChevronRight,
@@ -101,8 +101,9 @@ export default function DashboardPage() {
   const [hitlLoading, setHitlLoading] = useState(false);
   const [threadId, setThreadId] = useState(() => crypto.randomUUID());
   const [activePrompt, setActivePrompt] = useState("");
-  const [costEstimate, setCostEstimate] = useState<number>(0);
-  const [totalRetries, setTotalRetries] = useState(0);
+  const [costEstimate, setCostEstimate]   = useState<number>(0);
+  const [costBreakdown, setCostBreakdown] = useState<CostBreakdownItem[]>([]);
+  const [totalRetries, setTotalRetries]   = useState(0);
   const [streamingCode, setStreamingCode] = useState("");
   const [planSummary, setPlanSummary]     = useState<Record<string, number>>({});
   const [blastOk, setBlastOk]             = useState(true);
@@ -145,9 +146,10 @@ export default function DashboardPage() {
       const rc = evt.retry_count;
       if (rc) setTotalRetries((p) => Math.max(p, rc));
     } else if (ev.event === "plan_preview") {
-      const e = ev as SSEEvent & { plan_summary?: Record<string,number>; cost_estimate_monthly?: number; blast_radius_passed?: boolean; cost_ceiling_passed?: boolean };
+      const e = ev as SSEEvent & { plan_summary?: Record<string,number>; cost_estimate_monthly?: number; cost_breakdown?: CostBreakdownItem[]; blast_radius_passed?: boolean; cost_ceiling_passed?: boolean };
       if (e.plan_summary) setPlanSummary(e.plan_summary);
       if (e.cost_estimate_monthly !== undefined) setCostEstimate(e.cost_estimate_monthly);
+      if (e.cost_breakdown) setCostBreakdown(e.cost_breakdown);
       if (e.blast_radius_passed !== undefined) setBlastOk(e.blast_radius_passed);
       if (e.cost_ceiling_passed !== undefined) setCostOk(e.cost_ceiling_passed);
       updateStage("Plan_Node", e.blast_radius_passed === false || e.cost_ceiling_passed === false ? "warning" : "done");
@@ -383,6 +385,7 @@ export default function DashboardPage() {
               files={files}
               planSummary={planSummary}
               costEstimate={costEstimate}
+              costBreakdown={costBreakdown}
               blastRadiusPassed={blastOk}
               costCeilingPassed={costOk}
               onAction={handleHitL}

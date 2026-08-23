@@ -47,7 +47,10 @@
   color: var(--text-muted);
   font-weight: 500;
 }
-.headerRight {}
+.headerRight {
+  display: flex;
+  align-items: center;
+}
 .threadId {
   font-size: 0.65rem;
   color: var(--text-dim);
@@ -101,6 +104,132 @@
 .statUpdate { background: rgba(245,158,11,0.1); color: var(--yellow); border: 1px solid rgba(245,158,11,0.2); }
 .statDelete { background: rgba(239,68,68,0.1); color: var(--red); border: 1px solid rgba(239,68,68,0.2); }
 .statCost   { background: rgba(168,85,247,0.1); color: var(--purple); border: 1px solid rgba(168,85,247,0.2); }
+.statCostBtn {
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.statCostBtn:hover {
+  background: rgba(168,85,247,0.2);
+  border-color: rgba(168,85,247,0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(168,85,247,0.15);
+}
+.chevronIcon {
+  margin-left: 0.2rem;
+  transition: transform 0.2s ease;
+}
+.chevronIconOpen {
+  transform: rotate(180deg);
+}
+
+/* Cost Breakdown Section */
+.breakdownSection {
+  margin-top: 0.85rem;
+  padding: 0.85rem;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(168, 85, 247, 0.2);
+  border-radius: var(--radius-sm);
+  animation: fadeIn 0.2s ease-out;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.breakdownHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.65rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.breakdownTitle {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--purple);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.breakdownRates {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+.breakdownRates strong {
+  color: var(--text-primary);
+}
+
+.breakdownTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+}
+.breakdownTable th {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.breakdownTable td {
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  vertical-align: middle;
+}
+.resourceNameCell {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-primary);
+  font-weight: 500;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.resourceDetailText {
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  font-family: inherit;
+}
+.typeTag {
+  display: inline-block;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  font-family: var(--font-mono, monospace);
+}
+.costCell {
+  text-align: right;
+  font-weight: 700;
+  color: var(--purple);
+  white-space: nowrap;
+}
+.freeTag {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--green);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  font-size: 0.68rem;
+}
+
+.finopsTip {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 4px;
+  font-size: 0.72rem;
+  color: #93c5fd;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
 
 /* Guard alerts */
 .guardAlert {

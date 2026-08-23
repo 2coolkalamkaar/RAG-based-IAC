@@ -98,30 +98,50 @@ _INSTANCE_TYPE_MONTHLY_USD = {
 def estimate_monthly_cost(plan_json: dict) -> float:
     """
     Rough static monthly cost estimate from a terraform plan JSON.
+    """
+    total, _ = estimate_monthly_cost_breakdown(plan_json)
+    return total
 
-    This is NOT a live pricing lookup (no AWS Price List API call) — it's a
-    coarse per-resource-type table, good enough to gate the cost-ceiling
-    guardrail without adding an external dependency. Only resources being
-    created are counted (updates/deletes don't add new spend).
+
+def estimate_monthly_cost_breakdown(plan_json: dict) -> tuple[float, list[dict]]:
+    """
+    Calculate static monthly cost and return itemized resource breakdown.
     """
     total = 0.0
+    breakdown = []
     for change in _get_resource_changes(plan_json):
         if "create" not in _get_actions(change):
             continue
 
+        addr = change.get("address", "")
         rtype = change.get("type", "")
         after = change.get("change", {}).get("after") or {}
 
+        cost = 0.0
+        details = ""
         if rtype == "aws_instance" and isinstance(after, dict):
             instance_type = after.get("instance_type", "")
-            total += _INSTANCE_TYPE_MONTHLY_USD.get(
+            cost = _INSTANCE_TYPE_MONTHLY_USD.get(
                 instance_type, _RESOURCE_MONTHLY_COST_USD.get(rtype, 0.0)
             )
-            continue
+            details = f"{instance_type} on-demand (~730 hrs)" if instance_type else "EC2 instance"
+        elif rtype in _RESOURCE_MONTHLY_COST_USD:
+            cost = _RESOURCE_MONTHLY_COST_USD[rtype]
+            details = f"{rtype.replace('aws_', '').replace('_', ' ').title()}"
+        else:
+            cost = 0.0
+            details = "Included / Free tier"
 
-        total += _RESOURCE_MONTHLY_COST_USD.get(rtype, 0.0)
+        total += cost
+        breakdown.append({
+            "name": addr or f"{rtype}.resource",
+            "type": rtype,
+            "monthly_cost": round(cost, 2),
+            "is_free": cost == 0.0,
+            "details": details,
+        })
 
-    return round(total, 2)
+    return round(total, 2), breakdown
 
 
 # ── Check 1: Ownership (blast radius) ─────────────────────────────────────────

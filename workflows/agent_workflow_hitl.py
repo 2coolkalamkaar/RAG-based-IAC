@@ -26,7 +26,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import interrupt
 
 from aws.credentials_manager import assume_role
-from workflows.blast_radius_guard import run_all_guards, estimate_monthly_cost
+from workflows.blast_radius_guard import run_all_guards, estimate_monthly_cost, estimate_monthly_cost_breakdown
 
 APPLY_TIMEOUT_SECONDS = int(os.getenv("APPLY_TIMEOUT_SECONDS", "600"))
 
@@ -55,6 +55,7 @@ class AgentState(TypedDict):
     plan_json:              Dict   # Parsed `terraform show -json tfplan`
     plan_summary:           Dict   # {create: N, update: N, delete: N, resources: [...]}
     cost_estimate_monthly:  float  # Estimated USD/month from plan
+    cost_breakdown:         list[Dict]  # Itemized per-resource cost items
     blast_radius_passed:    bool   # True if plan doesn't touch unmanaged resources
     cost_ceiling_passed:    bool   # True if cost delta <= ceiling
     apply_status:           str    # "applied" | "failed" | "destroyed" | ""
@@ -279,19 +280,14 @@ def _get_cross_encoder():
     return _cross_encoder
 
 
-def _estimate_cost_infracost(workspace_path: str, plan_json: dict) -> float | None:
+def _estimate_cost_infracost(workspace_path: str, plan_json: dict | None = None) -> tuple[float | None, list[dict]]:
     """
-    Real per-resource pricing via the Infracost CLI, fed the plan JSON we already
-    computed (no second `terraform plan` needed — avoids a redundant AssumeRole call
-    for Infracost's own planning step).
+    Real per-resource pricing via the Infracost CLI.
+    Supports both plan JSON and directory scanning with Infracost v2.16+ & v2.15.
 
-    Returns the total estimated monthly cost, or None if Infracost isn't installed,
-    isn't configured with an API key, or the call fails for any reason — callers
-    should fall back to the static per-resource-type table in that case.
+    Returns:
+        (total_monthly_cost, cost_breakdown)
     """
-    if not plan_json:
-        return None
-
     infracost_path = shutil.which("infracost")
     if infracost_path is None:
         local_bin_path = os.path.expanduser("~/.local/bin/infracost")
@@ -299,31 +295,81 @@ def _estimate_cost_infracost(workspace_path: str, plan_json: dict) -> float | No
             infracost_path = local_bin_path
     if infracost_path is None:
         print("   Infracost CLI not installed — falling back to static cost estimate.")
-        return None
+        return None, []
 
-    if not os.getenv("INFRACOST_API_KEY"):
-        print("   INFRACOST_API_KEY not set — falling back to static cost estimate.")
-        return None
+    # Check for API key in env or logged-in token in ~/.config/infracost
+    has_token = (
+        bool(os.getenv("INFRACOST_API_KEY"))
+        or os.path.exists(os.path.expanduser("~/.config/infracost/token.json"))
+        or os.path.exists(os.path.expanduser("~/.config/infracost/credentials.json"))
+    )
+    if not has_token:
+        print("   Infracost not authenticated — falling back to static cost estimate.")
+        return None, []
 
-    plan_json_path = os.path.join(workspace_path, "infracost_plan.json")
     try:
-        with open(plan_json_path, "w") as f:
-            json.dump(plan_json, f)
-
+        # Try 'infracost scan <path> --json' (Infracost v2.16+) on the workspace directory
         res = subprocess.run(
-            [infracost_path, "breakdown", "--path", plan_json_path, "--format", "json", "--no-color"],
+            [infracost_path, "scan", workspace_path, "--json"],
             capture_output=True, text=True, timeout=60,
         )
-        if res.returncode != 0:
-            print(f"   Infracost breakdown failed, falling back to static estimate: {res.stderr.strip()[:200]}")
-            return None
+        if res.returncode == 0 and res.stdout.strip():
+            data = json.loads(res.stdout)
+            summary_cost = data.get("summary", {}).get("total_monthly_cost")
+            total = round(float(summary_cost), 2) if summary_cost is not None else None
+            
+            breakdown = []
+            for proj in data.get("projects", []):
+                for r in proj.get("resources", []):
+                    rname = r.get("name", "")
+                    rtype = r.get("type", "")
+                    is_free = r.get("is_free", False)
+                    cost = 0.0
+                    details_list = []
+                    for cc in r.get("cost_components", []):
+                        c_val = cc.get("total_monthly_cost")
+                        if c_val is not None:
+                            cost += float(c_val)
+                        c_name = cc.get("name", "")
+                        if c_name:
+                            details_list.append(c_name)
+                    for sub in r.get("subresources", []):
+                        for cc in sub.get("cost_components", []):
+                            c_val = cc.get("total_monthly_cost")
+                            if c_val is not None:
+                                cost += float(c_val)
+                            c_name = cc.get("name", "")
+                            if c_name:
+                                details_list.append(c_name)
+                    breakdown.append({
+                        "name": rname,
+                        "type": rtype,
+                        "monthly_cost": round(cost, 2),
+                        "is_free": is_free or cost == 0.0,
+                        "details": ", ".join(details_list) if details_list else ("Free resource" if is_free else "Provisioned resource")
+                    })
+            if total is not None:
+                return total, breakdown
 
-        breakdown = json.loads(res.stdout)
-        total = breakdown.get("totalMonthlyCost")
-        return round(float(total), 2) if total is not None else None
+        # Fallback to breakdown with plan JSON if available
+        if plan_json:
+            plan_json_path = os.path.join(workspace_path, "infracost_plan.json")
+            with open(plan_json_path, "w") as f:
+                json.dump(plan_json, f)
+            res = subprocess.run(
+                [infracost_path, "breakdown", "--path", plan_json_path, "--format", "json", "--no-color"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout)
+                total = data.get("totalMonthlyCost") or data.get("summary", {}).get("total_monthly_cost")
+                if total is not None:
+                    return round(float(total), 2), []
+
+        return None, []
     except Exception as e:
         print(f"   Infracost error, falling back to static estimate: {e}")
-        return None
+        return None, []
 
 
 def _get_aws_subprocess_env() -> dict:
@@ -794,17 +840,60 @@ def patcher_node(state: AgentState):
 
 def plan_node(state: AgentState):
     print("--- 📋 PLAN NODE ---")
-    if os.getenv("MOCK_AWS") == "true":
-        print("   [MOCK_AWS] Simulating Terraform Plan...")
-        return {
-            "plan_summary": {"create": 2, "update": 0, "delete": 0, "resources": ["aws_s3_bucket.mock", "aws_s3_bucket_versioning.mock"]},
-            "cost_estimate_monthly": 0.0,
-            "blast_radius_passed": True,
-            "cost_ceiling_passed": True,
-        }
-
     job_id = state.get("job_id", "unknown-job")
-    workspace_path = state.get("workspace_path", tempfile.mkdtemp())
+    workspace_path = state.get("workspace_path")
+    if not workspace_path or not os.path.exists(workspace_path):
+        workspace_path = tempfile.mkdtemp()
+        state["workspace_path"] = workspace_path
+
+    # Ensure generated code is in workspace
+    files = state.get("terraform_code", {})
+    if files:
+        for fname, fcontent in files.items():
+            with open(os.path.join(workspace_path, fname), "w") as f:
+                f.write(fcontent)
+
+    if os.getenv("MOCK_AWS") == "true":
+        print("   [MOCK_AWS] Simulating Terraform Plan from generated files...")
+        # Extract resource addresses from generated terraform code
+        found_resources = []
+        mock_resource_changes = []
+        for fname, fcontent in files.items():
+            matches = re.findall(r'resource\s+"([^"]+)"\s+"([^"]+)"', fcontent)
+            for rtype, rname in matches:
+                addr = f"{rtype}.{rname}"
+                found_resources.append(addr)
+                mock_resource_changes.append({
+                    "address": addr,
+                    "type": rtype,
+                    "change": {
+                        "actions": ["create"],
+                        "after": {"instance_type": "t3.medium" if "instance" in rtype else ""}
+                    }
+                })
+
+        mock_plan_json = {"resource_changes": mock_resource_changes}
+        cost_estimate, cost_breakdown = _estimate_cost_infracost(workspace_path, mock_plan_json)
+        cost_source = "infracost"
+        if cost_estimate is None:
+            cost_estimate, cost_breakdown = estimate_monthly_cost_breakdown(mock_plan_json)
+            cost_source = "static-table"
+        print(f"   Cost estimate: ${cost_estimate}/mo (source: {cost_source}, {len(cost_breakdown)} items)")
+
+        guard = run_all_guards(mock_plan_json, job_id, cost_estimate)
+        return {
+            "plan_json": mock_plan_json,
+            "plan_summary": {
+                "create": len(found_resources),
+                "update": 0,
+                "delete": 0,
+                "resources": found_resources,
+            },
+            "cost_estimate_monthly": cost_estimate,
+            "cost_breakdown": cost_breakdown,
+            "blast_radius_passed": guard["blast_radius_passed"],
+            "cost_ceiling_passed": guard["cost_ceiling_passed"],
+        }
     try:
         env = _get_aws_subprocess_env()
 
@@ -822,12 +911,12 @@ def plan_node(state: AgentState):
         update_count = sum(1 for rc in resource_changes if "update" in rc.get("change", {}).get("actions", []))
         delete_count = sum(1 for rc in resource_changes if "delete" in rc.get("change", {}).get("actions", []))
 
-        cost_estimate = _estimate_cost_infracost(workspace_path, plan_json)
+        cost_estimate, cost_breakdown = _estimate_cost_infracost(workspace_path, plan_json)
         cost_source = "infracost"
         if cost_estimate is None:
-            cost_estimate = estimate_monthly_cost(plan_json)
+            cost_estimate, cost_breakdown = estimate_monthly_cost_breakdown(plan_json)
             cost_source = "static-table"
-        print(f"   Cost estimate: ${cost_estimate}/mo (source: {cost_source})")
+        print(f"   Cost estimate: ${cost_estimate}/mo (source: {cost_source}, {len(cost_breakdown)} items)")
 
         guard = run_all_guards(plan_json, job_id, cost_estimate)
         print(f"   Blast-radius guard: {guard['summary']}")
@@ -836,6 +925,7 @@ def plan_node(state: AgentState):
             "plan_json": plan_json,
             "plan_summary": {"create": create_count, "update": update_count, "delete": delete_count, "resources": [rc["address"] for rc in resource_changes]},
             "cost_estimate_monthly": cost_estimate,
+            "cost_breakdown": cost_breakdown,
             "blast_radius_passed": guard["blast_radius_passed"],
             "cost_ceiling_passed": guard["cost_ceiling_passed"],
         }
@@ -844,6 +934,7 @@ def plan_node(state: AgentState):
         return {
             "plan_summary": {"create": 0, "update": 0, "delete": 0, "resources": []},
             "cost_estimate_monthly": 0.0,
+            "cost_breakdown": [],
             "blast_radius_passed": False,
             "cost_ceiling_passed": False,
         }

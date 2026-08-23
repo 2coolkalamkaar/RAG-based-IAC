@@ -157,6 +157,7 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
         "plan_json":              {},
         "plan_summary":           {},
         "cost_estimate_monthly":  0.0,
+        "cost_breakdown":         [],
         "blast_radius_passed":    True,
         "cost_ceiling_passed":    True,
         # Phase 4: apply
@@ -243,15 +244,17 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
                     })
 
                 elif node_name == "Plan_Node":
-                    plan_summary = state_update.get("plan_summary", {})
-                    cost_est     = state_update.get("cost_estimate_monthly", 0.0)
-                    blast_ok     = state_update.get("blast_radius_passed", True)
-                    cost_ok      = state_update.get("cost_ceiling_passed", True)
+                    plan_summary   = state_update.get("plan_summary", {})
+                    cost_est       = state_update.get("cost_estimate_monthly", 0.0)
+                    cost_breakdown = state_update.get("cost_breakdown", [])
+                    blast_ok       = state_update.get("blast_radius_passed", True)
+                    cost_ok        = state_update.get("cost_ceiling_passed", True)
                     yield _sse("plan_preview", {
                         "node":                  node_name,
                         "status":                "done" if blast_ok and cost_ok else "warning",
                         "plan_summary":          plan_summary,
                         "cost_estimate_monthly": cost_est,
+                        "cost_breakdown":        cost_breakdown,
                         "blast_radius_passed":   blast_ok,
                         "cost_ceiling_passed":   cost_ok,
                     })

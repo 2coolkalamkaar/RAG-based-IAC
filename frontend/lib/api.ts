@@ -20,6 +20,14 @@ export interface JobDetail extends Job {
   apply_outputs?: Record<string, unknown>;
   plan_summary?: Record<string, unknown>;
   cost_estimate?: number;
+  cost_breakdown?: Array<{
+    name: string;
+    type: string;
+    monthly_cost: number;
+    hourly_cost?: number;
+    details?: string;
+    is_free?: boolean;
+  }>;
   resource_citations?: Record<string, string[]>;
 }
 
