@@ -260,19 +260,8 @@ and show it.
 **Files touched:** `workflows/agent_workflow_advanced_rag.py`,
 `frontend/components/TerraformViewer`
 
-### Phase 6 — Drift detection against org policy
-
-*Depends on: Phase 1, 4* — **cut from hackathon scope, keep as roadmap slide**
-
-Needs elapsed real-world time to demo meaningfully; not worth build time before the deadline.
-
-### Phase 7 — Exportable audit trail
-
-*Depends on: Phase 4* — **cut from hackathon scope, keep as roadmap slide**
-
-When you do build it, fold in the Phase 3.5 guardrail outcomes (blast-radius/cost override
-history) alongside trust score, plan diff, reviewer identity, and apply outcome — the guardrail
-trail is now part of what "the record of what happened" means.
+> Drift detection and exportable audit trail (previously Phases 6 and 7) have been moved to
+> `docs/backlog.md` — no immediate need for either right now.
 
 ---
 
@@ -312,9 +301,7 @@ any judge with an infra background will ask.
 **Add if time allows:**
 9. Citations surfaced in UI (Phase 5) — data already exists, mostly a display task
 
-**Roadmap slide only, don't build:**
-- Drift detection (Phase 6)
-- Audit export (Phase 7)
+See `docs/backlog.md` for items deliberately not being worked on right now.
 
 ---
 

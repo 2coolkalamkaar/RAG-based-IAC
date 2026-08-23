@@ -279,6 +279,53 @@ def _get_cross_encoder():
     return _cross_encoder
 
 
+def _estimate_cost_infracost(workspace_path: str, plan_json: dict) -> float | None:
+    """
+    Real per-resource pricing via the Infracost CLI, fed the plan JSON we already
+    computed (no second `terraform plan` needed — avoids a redundant AssumeRole call
+    for Infracost's own planning step).
+
+    Returns the total estimated monthly cost, or None if Infracost isn't installed,
+    isn't configured with an API key, or the call fails for any reason — callers
+    should fall back to the static per-resource-type table in that case.
+    """
+    if not plan_json:
+        return None
+
+    infracost_path = shutil.which("infracost")
+    if infracost_path is None:
+        local_bin_path = os.path.expanduser("~/.local/bin/infracost")
+        if os.path.exists(local_bin_path):
+            infracost_path = local_bin_path
+    if infracost_path is None:
+        print("   Infracost CLI not installed — falling back to static cost estimate.")
+        return None
+
+    if not os.getenv("INFRACOST_API_KEY"):
+        print("   INFRACOST_API_KEY not set — falling back to static cost estimate.")
+        return None
+
+    plan_json_path = os.path.join(workspace_path, "infracost_plan.json")
+    try:
+        with open(plan_json_path, "w") as f:
+            json.dump(plan_json, f)
+
+        res = subprocess.run(
+            [infracost_path, "breakdown", "--path", plan_json_path, "--format", "json", "--no-color"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if res.returncode != 0:
+            print(f"   Infracost breakdown failed, falling back to static estimate: {res.stderr.strip()[:200]}")
+            return None
+
+        breakdown = json.loads(res.stdout)
+        total = breakdown.get("totalMonthlyCost")
+        return round(float(total), 2) if total is not None else None
+    except Exception as e:
+        print(f"   Infracost error, falling back to static estimate: {e}")
+        return None
+
+
 def _get_aws_subprocess_env() -> dict:
     """Full subprocess env with temporary AssumeRole AWS credentials merged in.
 
@@ -775,7 +822,13 @@ def plan_node(state: AgentState):
         update_count = sum(1 for rc in resource_changes if "update" in rc.get("change", {}).get("actions", []))
         delete_count = sum(1 for rc in resource_changes if "delete" in rc.get("change", {}).get("actions", []))
 
-        cost_estimate = estimate_monthly_cost(plan_json)
+        cost_estimate = _estimate_cost_infracost(workspace_path, plan_json)
+        cost_source = "infracost"
+        if cost_estimate is None:
+            cost_estimate = estimate_monthly_cost(plan_json)
+            cost_source = "static-table"
+        print(f"   Cost estimate: ${cost_estimate}/mo (source: {cost_source})")
+
         guard = run_all_guards(plan_json, job_id, cost_estimate)
         print(f"   Blast-radius guard: {guard['summary']}")
 

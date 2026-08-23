@@ -120,34 +120,8 @@ reasoning is thrown away after generation. Keep it, and show it.
 **Files touched:** `workflows/agent_workflow_advanced_rag.py`,
 `frontend/components/TerraformViewer`
 
-### Phase 6 — Drift detection against org policy
-
-*Depends on: Phase 1, 4*
-
-**Goal:** Once real infra exists, periodically check whether it still matches what the org's own
-docs require — not just whether it matches the last-applied state.
-
-**How it works:**
-1. On a schedule, run `terraform plan` against each applied job's workspace to catch drift from
-   the live account.
-2. Re-run retrieval against the org's knowledge base for each live resource, and flag any
-   mismatch against current internal policy docs — not just infra drift, policy drift.
-
-**Files touched:** new `workflows/drift_check.py`, `db/job_store.py`
-
-### Phase 7 — Exportable audit trail
-
-*Depends on: Phase 4*
-
-**Goal:** For a regulated org, the record of "who asked, what was generated, what the trust score
-was, who approved, what got applied" is itself the product, not a side effect.
-
-**How it works:**
-1. Bundle the trust score breakdown, plan diff, reviewer identity, and apply outcome into one job
-   report.
-2. Add a one-click export (PDF or shareable link) per job, framed as change-management evidence.
-
-**Files touched:** `db/job_store.py`, new `frontend/app/history/[job]/report`
+> Drift detection and exportable audit trail (previously Phases 6 and 7) have been moved to
+> `docs/backlog.md` — no immediate need for either right now.
 
 ### Phase 8 — Cost delta on the plan preview
 
@@ -171,5 +145,6 @@ disproportionate trust it buys from a reviewer before they click apply.
 2. **Credential storage** — needed before any real `plan` or `apply` call can run.
 3. **Plan preview node** — makes the existing approval gate actually meaningful.
 4. **Apply node** — the core promise of the product: approved code becomes real infrastructure.
-5. **Citations, then audit export, then cost delta, then drift detection** — each is independent
-   and can land in any order once Apply exists.
+5. **Citations, then cost delta** — each is independent and can land in any order once Apply exists.
+
+See `docs/backlog.md` for items deliberately not being worked on right now.
