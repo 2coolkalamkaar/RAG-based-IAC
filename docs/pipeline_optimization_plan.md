@@ -63,13 +63,13 @@ These were flagged as differentiators that were only stubbed. All now implemente
 
 | # | Fix | Why it helps | Effort |
 |---|---|---|---|
-| 1 | **Warm-start on server boot**, not on first request | Right now the first real request (possibly a judge) eats the one-time load cost. Trigger `_get_vector_store()` / `_get_cross_encoder()` from a FastAPI startup event instead. | Low |
-| 2 | **Parallelize `terraform validate` / `tflint` / `checkov`** | They're independent, currently sequential. Running concurrently (e.g. `concurrent.futures` or async subprocess) saves real wall-clock time every single run. | Low |
+| 1 | ✅ **Warm-start on server boot**, not on first request | Done — `api/server.py`'s `on_startup()` now imports `workflows.agent_workflow_hitl` and calls `_get_vector_store()` / `_get_cross_encoder()` directly at boot, before the server accepts requests. Whoever hits the pipeline first (a demo, a judge) no longer eats the ~4-5s cold-load cost. | Low |
+| 2 | **Parallelize `terraform validate` / `tflint` / `checkov`** | They're independent, currently sequential. Running concurrently (e.g. `concurrent.futures` or async subprocess) saves real wall-clock time every single run. See `docs/backlog.md` for the write-up (trade-off: `tflint` would then run even when `validate` already failed). | Low |
 | 3 | **Prompt-level cache for repeat/near-duplicate requests** | Cache keyed on request text (or its embedding for near-duplicates) skips retrieval + generation entirely for a repeat ask. Also a legitimate demo trick: pre-warm cache with demo prompts before going on stage. | Medium |
 | 4 | **Cheaper/faster model for MultiQuery expansion** | Query expansion currently costs a full Gemini 2.5 Pro round-trip *before* the real generation call. Swap to a lighter model, or skip expansion when the first search already returns strong hits. | Medium |
-| 5 | **Trim `messages` history sent to the LLM** | Already flagged in `pipeline_review.md` — history grows unbounded per thread, wasting tokens and slowing every call on long-lived threads. Keep last N messages. | Low |
-| 6 | **WAL checkpoint on `state.db`** | `pipeline_review.md` item — SQLite WAL file grows unchecked; periodic `PRAGMA wal_checkpoint(TRUNCATE)` at startup keeps state reads fast over time. | Trivial |
-| 7 | **Single shared LLM client instance** | `llm` and `mq_llm` are two separate `ChatVertexAI` connections for the same model, just different temperature. Collapse to one client with per-call temperature override. | Trivial |
+| 5 | ✅ **Trim `messages` history sent to the LLM** | Done — `architect_node` windows to the last 8 non-Fixer messages (commit `bd6af9c`). | Low |
+| 6 | ✅ **WAL checkpoint on `state.db`** | Done — `api/server.py`'s `on_startup()` runs `PRAGMA wal_checkpoint(TRUNCATE)` (commit `bd6af9c`). | Trivial |
+| 7 | **Single shared LLM client instance** | Partial — `llm` and `mq_llm` now share a `_VERTEX_CONFIG` dict (commit `bd6af9c`), so config can't drift, but they're still two separate `ChatVertexAI` instances/auth handshakes. Full fix would collapse to one client with a per-call temperature override. | Trivial |
 | 8 | **Stream pipeline progress, not just final text** | Perceived speed matters as much as real speed on stage — streaming plan/guard progress over the existing SSE connection keeps a judge watching a live trace instead of a blank screen. | Medium |
 
 **Caveat:** singleton caching (already shipped, Section 1) is per-*process*. If this ever runs

@@ -79,6 +79,21 @@ def on_startup():
         except Exception as _e:
             print(f"[Startup] WAL checkpoint skipped: {_e}")
 
+    # Warm-start the HITL workflow's retriever singletons (embedding model, Chroma
+    # store, CrossEncoder reranker) here at boot instead of on the first real
+    # request — so whoever hits the pipeline first (a demo, a judge) doesn't eat
+    # the ~4-5s cold-load cost. Importing the module also runs its own one-time
+    # setup (LLM clients, graph compile, state.db connection).
+    import time
+    _t0 = time.time()
+    try:
+        import workflows.agent_workflow_hitl as _hitl
+        _hitl._get_vector_store()
+        _hitl._get_cross_encoder()
+        print(f"[Startup] Retriever/reranker warm-start complete in {time.time() - _t0:.1f}s")
+    except Exception as _e:
+        print(f"[Startup] Retriever/reranker warm-start skipped: {_e}")
+
 
 # ── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/api/health")
