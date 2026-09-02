@@ -57,3 +57,44 @@ was, who approved, what got applied" is itself the product, not a side effect.
    trail is part of what "the record of what happened" means.
 
 **Files touched:** `db/job_store.py`, new `frontend/app/history/[job]/report`.
+
+---
+
+## Parallelize independent tasks in the HITL pipeline
+
+*Discussed against `workflows/agent_workflow_hitl.py`. No dependency — can land any time.*
+
+**Why it's on the backlog:** no immediate need — modest, not urgent wins; worth doing but not
+ahead of the workspace_path persistence bug or other correctness work.
+
+**Goal:** Two spots in the pipeline currently run two independent things sequentially for no
+reason other than code order. Both are I/O-bound (waiting on a network call or a subprocess, not
+CPU work), so a `concurrent.futures.ThreadPoolExecutor` overlaps the waiting instead of stacking
+it — Python's GIL blocks concurrent *computation*, not concurrent *waiting*.
+
+**Case 1 — `retriever_node`'s second, unrelated search:**
+```python
+docs = retriever_pipeline.invoke(user_request)              # slow: MultiQuery + rerank
+sim_results = vector_store.similarity_search_with_relevance_scores(user_request, k=5)  # independent
+```
+`sim_results` only feeds `avg_retrieval_similarity` for the trust score — it doesn't depend on
+`docs`, and `docs` doesn't depend on it. Run both via a thread pool and `.result()` both instead of
+awaiting them one after another; the second call's cost becomes free, hidden behind the first's
+wait.
+
+**Case 2 — `validate_terraform_code`'s `terraform validate` and `tflint`:**
+```python
+val_res    = subprocess.run(["terraform", "validate", ...], ...)
+tflint_res = subprocess.run(["tflint", ...], ...)
+```
+Both are read-only checks against the same already-`init`'d directory; neither depends on the
+other's result. Submitting both to a thread pool saves roughly whichever one is faster, on every
+validation pass — including every Fixer retry loop, so it compounds.
+
+**Trade-off to decide before building:** today, a `terraform validate` failure returns immediately
+and `tflint` never runs (saves a wasted lint pass on code that already failed). Parallelizing means
+both run unconditionally every time, even when `validate` is going to fail anyway. Net win in the
+common case (most runs pass validate), but not strictly free — worth confirming that's acceptable
+before implementing.
+
+**Files touched:** `workflows/agent_workflow_hitl.py` (`retriever_node`, `validate_terraform_code`).
