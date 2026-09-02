@@ -30,3 +30,4 @@ promptfoo.sarif
 
 gcp-ci-key.json
 jobs.db
+# Persistent Terraform workspaces (contain real state files — never commit)\nworkspaces/\njobs.db\ncheck_db.py\ncheck_jobs.py

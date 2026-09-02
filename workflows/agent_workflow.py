@@ -91,11 +91,12 @@ import os
 os.environ["LANGCHAIN_PROJECT"] = "Workflow_with_gemini_2.5"
 
 # Initialize the LLM
-llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.2)
+llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.2, streaming=True)
 
 # --- 2. Define the Nodes (Workers) ---
 
-def architect_node(state: AgentState):
+from langchain_core.runnables.config import RunnableConfig
+def architect_node(state: AgentState, config: RunnableConfig):
     """
     Generates the initial Terraform plan based on user requirements.
     """

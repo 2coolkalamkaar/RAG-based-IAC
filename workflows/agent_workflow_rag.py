@@ -92,7 +92,7 @@ def validate_terraform_code(files: dict) -> tuple[bool, str]:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 # Initialize the LLM
-llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.2)
+llm = ChatVertexAI(model_name="gemini-2.5-pro", project="project-036ddc82-f451-4fae-9e3", location="us-central1", temperature=0.2, streaming=True)
 
 # --- 2. Define the Nodes (Workers) ---
 
@@ -124,7 +124,8 @@ def retriever_node(state: AgentState):
         print(f"⚠️ Retrieval error: {e}. Proceeding without context.")
         return {"retrieved_context": ""}
 
-def architect_node(state: AgentState):
+from langchain_core.runnables.config import RunnableConfig
+def architect_node(state: AgentState, config: RunnableConfig):
     """
     Generates the initial Terraform plan based on user requirements AND retrieved context.
     """

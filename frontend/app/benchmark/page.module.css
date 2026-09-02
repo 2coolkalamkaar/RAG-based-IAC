@@ -1,0 +1,266 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  padding-bottom: 3rem;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.subtitle {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+}
+
+/* ── Tier Cards ────────────────────────────────── */
+.tierGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.tierCard {
+  border: 1px solid;
+  border-radius: var(--radius-lg);
+  padding: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.tierTop {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.tierIcon { font-size: 1.4rem; }
+
+.tierLabel {
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.tierTagline {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  margin-top: 0.15rem;
+}
+
+.tierStats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+}
+
+.stat { display: flex; flex-direction: column; gap: 0.2rem; }
+
+.statVal {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.statUnit {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.statKey {
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.2rem;
+}
+
+.contextRow {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 0.75rem;
+}
+
+.contextLabel {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.contextVal {
+  float: right;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ── Bar ───────────────────────────────────────── */
+.barTrack {
+  height: 4px;
+  background: var(--bg-overlay);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 0.3rem;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.6s ease;
+}
+
+/* ── Insight Box ───────────────────────────────── */
+.insightBox {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  background: rgba(88, 166, 255, 0.06);
+  border: 1px solid rgba(88, 166, 255, 0.2);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.2rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.insightIcon { font-size: 1.1rem; flex-shrink: 0; margin-top: 0.1rem; }
+
+.insightBox strong { color: var(--text-primary); }
+.insightBox em { color: var(--accent-blue); font-style: normal; }
+
+/* ── Section ───────────────────────────────────── */
+.section { display: flex; flex-direction: column; gap: 1rem; }
+
+.sectionTitle {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.sectionDesc {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.sectionDesc code {
+  background: var(--bg-overlay);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: var(--accent-purple);
+}
+
+/* ── Scenario Table ────────────────────────────── */
+.tableWrapper {
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.table th {
+  background: var(--bg-elevated);
+  padding: 0.8rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+}
+
+.table tr:last-child td { border-bottom: none; }
+
+.table tr:hover td { background: var(--bg-elevated); }
+
+.scenarioLabel { font-weight: 600; color: var(--text-primary); }
+.scenarioSub { font-size: 0.72rem; color: var(--text-secondary); margin-top: 0.2rem; }
+
+.scoreCell { text-align: center; }
+.scoreNum { font-size: 1rem; font-weight: 700; display: block; }
+.scoreNote { font-size: 0.65rem; color: var(--text-secondary); display: block; margin-top: 0.15rem; }
+
+/* ── V2 Grid ───────────────────────────────────── */
+.v2Grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.v2Card {
+  background: var(--bg-elevated);
+  border: 1px solid;
+  border-radius: var(--radius-md);
+  padding: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.v2Header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.v2Tier { font-weight: 600; font-size: 0.85rem; }
+.v2Result { font-size: 0.8rem; font-weight: 600; }
+
+.v2Stats { display: flex; gap: 1.5rem; }
+.v2Stat { text-align: center; }
+.v2StatVal { font-size: 1.2rem; font-weight: 700; }
+.v2StatKey { font-size: 0.65rem; color: var(--text-secondary); text-transform: uppercase; margin-top: 0.1rem; }
+
+.v2Badge {
+  font-size: 0.7rem;
+  background: rgba(63, 185, 80, 0.1);
+  color: #3fb950;
+  border: 1px solid rgba(63, 185, 80, 0.2);
+  border-radius: 20px;
+  padding: 0.25rem 0.7rem;
+  text-align: center;
+  font-weight: 600;
+}
+
+/* ── Methodology ───────────────────────────────── */
+.methodGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.methodIcon { font-size: 1.5rem; margin-bottom: 0.5rem; }
+.methodTitle { font-weight: 700; margin-bottom: 0.4rem; font-size: 0.9rem; }
+.methodDesc { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.6; }
+.methodDesc code {
+  background: var(--bg-overlay);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: var(--accent-purple);
+}

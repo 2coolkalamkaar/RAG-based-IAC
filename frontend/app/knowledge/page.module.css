@@ -115,3 +115,181 @@
 .docName { font-size: 0.85rem; font-weight: 600; color: #c9d1d9; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .docDesc { font-size: 0.75rem; color: #8b949e; margin-top: 2px; }
 .docDate { font-size: 0.7rem; color: #484f58; margin-top: 4px; }
+
+.docsHeader { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem; }
+.docsHeader .cardTitle { margin-bottom: 0; }
+
+/* ── ETL Sync Panel ── */
+.etlCard {
+  margin-bottom: 1.5rem;
+  background: linear-gradient(135deg, rgba(31,111,235,0.05) 0%, rgba(139,92,246,0.05) 100%);
+  border-color: rgba(31,111,235,0.2);
+}
+
+.etlHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.etlHeaderLeft {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.etlIcon { color: #58a6ff; flex-shrink: 0; margin-top: 2px; }
+
+.etlMeta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.etlMetaItem {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: #8b949e;
+  background: rgba(139,148,158,0.08);
+  border: 1px solid #21262d;
+  border-radius: 20px;
+  padding: 0.3rem 0.75rem;
+  white-space: nowrap;
+}
+
+.etlOptions {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  padding: 0.875rem 1rem;
+  background: rgba(0,0,0,0.2);
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  margin-bottom: 1.25rem;
+}
+
+.etlToggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.83rem;
+  color: #c9d1d9;
+  cursor: pointer;
+  user-select: none;
+}
+.etlToggle input[type="checkbox"] { accent-color: #58a6ff; width: 15px; height: 15px; cursor: pointer; }
+.etlToggle small { color: #484f58; font-size: 0.72rem; }
+
+.etlToggleDanger { color: #f0883e; }
+.etlToggleDanger input[type="checkbox"] { accent-color: #f0883e; }
+
+.etlRunBtn { margin-left: auto; gap: 0.4rem; }
+
+/* ── ETL Log Terminal ── */
+.etlTerminal {
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #010409;
+}
+
+.etlTerminalBar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.875rem;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  min-height: 32px;
+}
+
+.termDot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.termTitle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: #8b949e;
+  margin-left: 0.25rem;
+  font-family: var(--font-mono);
+  flex: 1;
+}
+
+.termClear {
+  background: none;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  border-radius: 4px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.termClear:hover { border-color: #58a6ff; color: #58a6ff; }
+
+.etlLogs {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 0.5rem 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.logLine {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  padding: 0.15rem 0.875rem;
+  line-height: 1.5;
+  transition: background 0.1s;
+}
+.logLine:hover { background: rgba(255,255,255,0.02); }
+
+.logNum {
+  min-width: 32px;
+  color: #30363d;
+  text-align: right;
+  margin-right: 1rem;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.logText { color: #8b949e; word-break: break-word; }
+.logDefault .logText { color: #8b949e; }
+.logSuccess .logText { color: #3fb950; }
+.logError .logText { color: #f85149; }
+.logWarn .logText { color: #d29922; }
+.logInfo .logText { color: #58a6ff; }
+
+.etlDoneBanner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1rem;
+  background: rgba(63,185,80,0.08);
+  border-top: 1px solid rgba(63,185,80,0.2);
+  color: #3fb950;
+  font-size: 0.8rem;
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
