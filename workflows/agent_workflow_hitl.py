@@ -382,6 +382,8 @@ def _get_aws_subprocess_env() -> dict:
     creds = assume_role()
     env = os.environ.copy()
     env.update({k: v for k, v in creds.items() if not k.startswith("_")})
+    env.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+    env.setdefault("AWS_REGION", "us-east-1")
     return env
 
 
@@ -893,6 +895,7 @@ def plan_node(state: AgentState):
             "cost_breakdown": cost_breakdown,
             "blast_radius_passed": guard["blast_radius_passed"],
             "cost_ceiling_passed": guard["cost_ceiling_passed"],
+            "workspace_path": workspace_path,
         }
 
     # ── Check if real AWS credentials are configured before attempting live plan ──
@@ -932,6 +935,7 @@ def plan_node(state: AgentState):
             "cost_breakdown": cost_breakdown,
             "blast_radius_passed": guard["blast_radius_passed"],
             "cost_ceiling_passed": guard["cost_ceiling_passed"],
+            "workspace_path": workspace_path,
         }
 
     # ── Step 1: Run terraform subprocess calls ────────────────────────────────
@@ -993,6 +997,7 @@ def plan_node(state: AgentState):
         "cost_breakdown": cost_breakdown,
         "blast_radius_passed": guard["blast_radius_passed"],
         "cost_ceiling_passed": guard["cost_ceiling_passed"],
+        "workspace_path": workspace_path,
     }
 
 def apply_node(state: AgentState):
@@ -1002,28 +1007,76 @@ def apply_node(state: AgentState):
         return {"apply_status": "applied", "apply_outputs": {"mock_bucket_arn": "arn:aws:s3:::mock-bucket-123"}}
 
     workspace_path = state.get("workspace_path", "")
-    if not workspace_path:
-        return {"apply_status": "failed"}
+    files = state.get("terraform_code", {})
+
+    # If workspace_path is missing or doesn't exist on disk, recreate it from state
+    if not workspace_path or not os.path.exists(workspace_path):
+        workspace_path = tempfile.mkdtemp(prefix="terraforge_apply_")
+        print(f"   [apply_node] Workspace reconstructed at: {workspace_path}")
+
+    # Ensure all current terraform code is written into workspace
+    if files:
+        for fname, fcontent in files.items():
+            with open(os.path.join(workspace_path, fname), "w") as f:
+                f.write(fcontent)
 
     try:
         env = _get_aws_subprocess_env()
+
+        # Run init to guarantee plugins/providers are installed
+        init_res = subprocess.run(
+            ["terraform", "init", "-backend=false"],
+            cwd=workspace_path, env=env, capture_output=True, text=True,
+            timeout=120,
+        )
+        if init_res.returncode != 0:
+            err_msg = init_res.stderr or init_res.stdout
+            print(f"   [apply_node] ❌ terraform init failed:\n{err_msg}")
+            return {
+                "apply_status": "failed",
+                "apply_outputs": {"error": err_msg},
+                "workspace_path": workspace_path,
+            }
+
+        # Apply using pre-computed tfplan if present, otherwise direct auto-approve
+        tfplan_path = os.path.join(workspace_path, "tfplan")
+        apply_cmd = ["terraform", "apply", "-auto-approve"]
+        if os.path.exists(tfplan_path):
+            apply_cmd.append("tfplan")
+
+        print(f"   [apply_node] Running: {' '.join(apply_cmd)}")
         res = subprocess.run(
-            ["terraform", "apply", "-auto-approve", "tfplan"],
+            apply_cmd,
             cwd=workspace_path, env=env, capture_output=True, text=True,
             timeout=APPLY_TIMEOUT_SECONDS,
         )
         status = "applied" if res.returncode == 0 else "failed"
 
+        if status == "applied":
+            print("   [apply_node] ✅ Terraform Apply SUCCEEDED!")
+        else:
+            print(f"   [apply_node] ❌ Terraform Apply FAILED (code {res.returncode}):")
+            if res.stdout:
+                print(f"   [apply_node] stdout:\n{res.stdout}")
+            if res.stderr:
+                print(f"   [apply_node] stderr:\n{res.stderr}")
+
         out_res = subprocess.run(["terraform", "output", "-json"], cwd=workspace_path, env=env, capture_output=True, text=True)
         outputs = json.loads(out_res.stdout) if out_res.returncode == 0 and out_res.stdout.strip() else {}
+        if status == "failed":
+            outputs["error"] = res.stderr or res.stdout
 
-        return {"apply_status": status, "apply_outputs": outputs}
+        return {
+            "apply_status": status,
+            "apply_outputs": outputs,
+            "workspace_path": workspace_path,
+        }
     except subprocess.TimeoutExpired:
-        print(f"Apply error: exceeded {APPLY_TIMEOUT_SECONDS}s timeout — killed")
-        return {"apply_status": "failed"}
+        print(f"   [apply_node] ❌ Apply error: exceeded {APPLY_TIMEOUT_SECONDS}s timeout — killed")
+        return {"apply_status": "failed", "apply_outputs": {"error": "Timeout expired"}, "workspace_path": workspace_path}
     except Exception as e:
-        print(f"Apply error: {e}")
-        return {"apply_status": "failed"}
+        print(f"   [apply_node] ❌ Apply error: {e}")
+        return {"apply_status": "failed", "apply_outputs": {"error": str(e)}, "workspace_path": workspace_path}
 
 def destroy_node(state: AgentState):
     print("--- 💥 DESTROY NODE ---")
@@ -1032,24 +1085,41 @@ def destroy_node(state: AgentState):
         return {"apply_status": "destroyed"}
 
     workspace_path = state.get("workspace_path", "")
-    if not workspace_path:
-        return {"apply_status": "failed"}
+    files = state.get("terraform_code", {})
+
+    if not workspace_path or not os.path.exists(workspace_path):
+        workspace_path = tempfile.mkdtemp(prefix="terraforge_destroy_")
+        print(f"   [destroy_node] Workspace reconstructed at: {workspace_path}")
+
+    if files:
+        for fname, fcontent in files.items():
+            with open(os.path.join(workspace_path, fname), "w") as f:
+                f.write(fcontent)
 
     try:
         env = _get_aws_subprocess_env()
+        subprocess.run(
+            ["terraform", "init", "-backend=false"],
+            cwd=workspace_path, env=env, capture_output=True, text=True,
+            timeout=120,
+        )
         res = subprocess.run(
             ["terraform", "destroy", "-auto-approve"],
             cwd=workspace_path, env=env, capture_output=True, text=True,
             timeout=APPLY_TIMEOUT_SECONDS,
         )
         status = "destroyed" if res.returncode == 0 else "failed"
-        return {"apply_status": status}
+        if status != "destroyed":
+            print(f"   [destroy_node] ❌ Destroy failed (code {res.returncode}):\n{res.stderr or res.stdout}")
+        else:
+            print("   [destroy_node] ✅ Terraform Destroy SUCCEEDED!")
+        return {"apply_status": status, "workspace_path": workspace_path}
     except subprocess.TimeoutExpired:
-        print(f"Destroy error: exceeded {APPLY_TIMEOUT_SECONDS}s timeout — killed")
-        return {"apply_status": "failed"}
+        print(f"   [destroy_node] Destroy error: exceeded {APPLY_TIMEOUT_SECONDS}s timeout — killed")
+        return {"apply_status": "failed", "workspace_path": workspace_path}
     except Exception as e:
-        print(f"Destroy error: {e}")
-        return {"apply_status": "failed"}
+        print(f"   [destroy_node] Destroy error: {e}")
+        return {"apply_status": "failed", "workspace_path": workspace_path}
 
 # ─────────────────────────────────────────────────
 # 6. Routing Logic

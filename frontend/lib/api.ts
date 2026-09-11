@@ -70,6 +70,16 @@ export async function deleteJob(id: string): Promise<void> {
 }
 
 // ── HitL Actions ──────────────────────────────────────────────────────────────
+async function pollHitLStatus(runId: string, intervalMs = 2000): Promise<unknown> {
+  while (true) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    const res = await fetch(`${API_BASE}/api/hitl/status/${runId}`, { cache: "no-store" });
+    if (!res.ok) throw new Error("Status check failed");
+    const data = await res.json();
+    if (data.status !== "running") return data;
+  }
+}
+
 export async function submitHitLAction(
   threadId: string,
   workflow: string,
@@ -90,15 +100,18 @@ export async function submitHitLAction(
       override_confirmed: overrideConfirmed,
     }),
   });
-  
-  if (res.ok) {
-    try {
-      return await res.json();
-    } catch {
-      return null;
-    }
+
+  if (!res.ok) throw new Error("Action failed");
+
+  const data = await res.json();
+
+  // Long-running apply/destroy: backend returns {status: "running", run_id: "..."}
+  // Poll until done
+  if (data.status === "running" && data.run_id) {
+    return pollHitLStatus(data.run_id);
   }
-  throw new Error("Action failed");
+
+  return data;
 }
 
 // ── Docs ──────────────────────────────────────────────────────────────────────

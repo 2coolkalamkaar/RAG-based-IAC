@@ -243,6 +243,13 @@ export default function DashboardPage() {
   ) {
     setHitlLoading(true);
     try {
+      if (action === "apply") {
+        addLog("Sending apply to AWS — this may take 30–120s…", "dim");
+        updateStage("Apply_Node", "running");
+      } else if (action === "destroy") {
+        addLog("Destroying resources — this may take 30–120s…", "dim");
+        updateStage("Destroy_Node", "running");
+      }
       const res = await submitHitLAction(threadId, workflow, action, patchRequest, activePrompt, overrideConfirmed);
       if (action === "approve") {
         setHitlPaused(false);
@@ -254,6 +261,16 @@ export default function DashboardPage() {
         setApplyStatus(status);
         updateStage("Apply_Node", status === "applied" ? "done" : "failed");
         addLog(`Apply ${status}`, status === "applied" ? "ok" : "err");
+        if (status === "failed") {
+          const errDetail = (res as Record<string, unknown>)?.apply_outputs as Record<string, string> | undefined;
+          if (errDetail?.error) addLog(`Error: ${errDetail.error}`, "err");
+        }
+      } else if (action === "destroy") {
+        setHitlPaused(false);
+        const status = (res as Record<string, string>)?.apply_status ?? "";
+        setApplyStatus(status);
+        updateStage("Destroy_Node", status === "destroyed" ? "done" : "failed");
+        addLog(`Destroy ${status}`, status === "destroyed" ? "ok" : "err");
       } else if (action === "patch") {
         setHitlPaused(false);
         setRunning(true);

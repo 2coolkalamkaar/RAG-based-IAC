@@ -374,6 +374,61 @@ class HitLAction(BaseModel):
     override_confirmed: bool = False  # typed confirmation for flagged applies
 
 
+# ── In-memory apply run store (run_id → result) ────────────────────────────
+_apply_runs: dict = {}  # run_id → {"status": "running"|"done"|"error", "result": {...}}
+
+
+def _run_hitl_invoke(run_id: str, req: HitLAction, mod, config: dict):
+    """Run agent_app.invoke in a background thread and store the result."""
+    try:
+        agent_app = mod.app
+        agent_app.invoke(
+            Command(resume={"hitl_action": req.action, "patch_request": req.patch_request}),
+            config=config,
+        )
+        final_state = agent_app.get_state(config).values
+
+        job_id = None
+        if req.action in ("approve", "apply"):
+            job_id = save_job(
+                thread_id=req.thread_id,
+                prompt=req.prompt,
+                workflow=req.workflow,
+                trust_score=final_state.get("trust_score"),
+                trust_label=final_state.get("trust_label"),
+                trust_factors=final_state.get("trust_factors"),
+                files=final_state.get("terraform_code", {}),
+                workspace_path=final_state.get("workspace_path"),
+                resource_citations=final_state.get("resource_citations", {}),
+            )
+            if final_state.get("plan_summary"):
+                update_plan_summary(
+                    job_id,
+                    final_state.get("plan_summary", {}),
+                    final_state.get("cost_estimate_monthly", 0.0),
+                )
+            if req.action == "apply":
+                apply_status = final_state.get("apply_status", "")
+                if apply_status:
+                    update_apply_status(job_id, apply_status, final_state.get("apply_outputs"))
+
+        _apply_runs[run_id] = {
+            "status": "done",
+            "result": {
+                "status": "ok",
+                "action": req.action,
+                "apply_status": final_state.get("apply_status", ""),
+                "files": final_state.get("terraform_code", {}),
+                "resource_citations": final_state.get("resource_citations", {}),
+            }
+        }
+    except Exception as e:
+        _apply_runs[run_id] = {
+            "status": "error",
+            "result": {"status": "error", "detail": str(e), "action": req.action}
+        }
+
+
 @app.post("/api/hitl/action")
 def hitl_action(req: HitLAction):
     module_path = WORKFLOW_MODULES.get(req.workflow)
@@ -402,6 +457,20 @@ def hitl_action(req: HitLAction):
                 detail="Blast-radius or cost guard failed. Set override_confirmed=true to proceed."
             )
 
+    # Apply & Destroy are long-running — run in a background thread and return
+    # immediately so the HTTP connection never times out.
+    if req.action in ("apply", "destroy"):
+        run_id = str(uuid.uuid4())
+        _apply_runs[run_id] = {"status": "running", "result": None}
+        t = threading.Thread(
+            target=_run_hitl_invoke,
+            args=(run_id, req, mod, config),
+            daemon=True,
+        )
+        t.start()
+        return {"status": "running", "run_id": run_id, "action": req.action}
+
+    # Fast actions (approve, patch) — run synchronously, respond immediately
     agent_app.invoke(
         Command(resume={"hitl_action": req.action, "patch_request": req.patch_request}),
         config=config,
@@ -409,8 +478,7 @@ def hitl_action(req: HitLAction):
 
     final_state = agent_app.get_state(config).values
 
-    # Persist job on approve or apply
-    if req.action in ("approve", "apply"):
+    if req.action == "approve":
         job_id = save_job(
             thread_id=req.thread_id,
             prompt=req.prompt,
@@ -422,18 +490,12 @@ def hitl_action(req: HitLAction):
             workspace_path=final_state.get("workspace_path"),
             resource_citations=final_state.get("resource_citations", {}),
         )
-        # Persist plan summary if available
         if final_state.get("plan_summary"):
             update_plan_summary(
                 job_id,
                 final_state.get("plan_summary", {}),
                 final_state.get("cost_estimate_monthly", 0.0),
             )
-        # If this was a direct apply, persist the apply status immediately
-        if req.action == "apply":
-            apply_status = final_state.get("apply_status", "")
-            if apply_status:
-                update_apply_status(job_id, apply_status, final_state.get("apply_outputs"))
 
     return {
         "status": "ok",
@@ -442,6 +504,19 @@ def hitl_action(req: HitLAction):
         "files": final_state.get("terraform_code", {}),
         "resource_citations": final_state.get("resource_citations", {}),
     }
+
+
+@app.get("/api/hitl/status/{run_id}")
+def hitl_status(run_id: str):
+    """Poll for the result of a background apply/destroy action."""
+    run = _apply_runs.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run ID not found")
+    if run["status"] == "running":
+        return {"status": "running", "run_id": run_id}
+    # Clean up once consumed
+    _apply_runs.pop(run_id, None)
+    return run["result"]
 
 
 # ── Job History ───────────────────────────────────────────────────────────────
