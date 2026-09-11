@@ -934,53 +934,66 @@ def plan_node(state: AgentState):
             "cost_ceiling_passed": guard["cost_ceiling_passed"],
         }
 
+    # ── Step 1: Run terraform subprocess calls ────────────────────────────────
+    # Narrow catch: only OS/subprocess-level failures (binary not found, permission
+    # error, process crash). These mean we literally could not run the plan tool —
+    # not that the code is dangerous. Fail open with a clear warning so the human
+    # reviewer can still inspect the generated code and decide.
     try:
         env = _get_aws_subprocess_env()
-
-        # Run init just in case
         subprocess.run(["terraform", "init", "-backend=false"], cwd=workspace_path, env=env, capture_output=True)
-        # Run plan and output to tfplan
         subprocess.run(["terraform", "plan", "-out=tfplan", "-detailed-exitcode"], cwd=workspace_path, env=env, capture_output=True, text=True)
-
-        # Parse plan
         show_res = subprocess.run(["terraform", "show", "-json", "tfplan"], cwd=workspace_path, env=env, capture_output=True, text=True)
-        plan_json = json.loads(show_res.stdout) if show_res.returncode == 0 else {}
-
-        resource_changes = plan_json.get("resource_changes", [])
-        create_count = sum(1 for rc in resource_changes if "create" in rc.get("change", {}).get("actions", []))
-        update_count = sum(1 for rc in resource_changes if "update" in rc.get("change", {}).get("actions", []))
-        delete_count = sum(1 for rc in resource_changes if "delete" in rc.get("change", {}).get("actions", []))
-
-        cost_estimate, cost_breakdown = _estimate_cost_infracost(workspace_path, plan_json)
-        cost_source = "infracost"
-        if cost_estimate is None:
-            cost_estimate, cost_breakdown = estimate_monthly_cost_breakdown(plan_json)
-            cost_source = "static-table"
-        print(f"   Cost estimate: ${cost_estimate}/mo (source: {cost_source}, {len(cost_breakdown)} items)")
-
-        guard = run_all_guards(plan_json, job_id, cost_estimate)
-        print(f"   Blast-radius guard: {guard['summary']}")
-
-        return {
-            "plan_json": plan_json,
-            "plan_summary": {"create": create_count, "update": update_count, "delete": delete_count, "resources": [rc["address"] for rc in resource_changes]},
-            "cost_estimate_monthly": cost_estimate,
-            "cost_breakdown": cost_breakdown,
-            "blast_radius_passed": guard["blast_radius_passed"],
-            "cost_ceiling_passed": guard["cost_ceiling_passed"],
-        }
-    except Exception as e:
-        # An exception here means we couldn't run terraform plan (e.g. network error,
-        # binary not found) — NOT that the generated code is dangerous.
-        # Default guards to True so the user can still review and decide.
-        print(f"   [plan_node] Plan execution error (non-fatal): {e}")
+    except (OSError, FileNotFoundError, subprocess.SubprocessError) as e:
+        # Infrastructure failure — couldn't invoke terraform at all.
+        # Return fail-open so the human can still review the generated code.
+        print(f"   [plan_node] terraform subprocess failed (tool unavailable): {e}")
         return {
             "plan_summary": {"create": 0, "update": 0, "delete": 0, "resources": []},
             "cost_estimate_monthly": 0.0,
             "cost_breakdown": [],
-            "blast_radius_passed": True,   # plan error ≠ security violation
+            "blast_radius_passed": True,   # subprocess failure ≠ security violation
             "cost_ceiling_passed": True,
         }
+
+    # ── Step 2: Parse plan JSON ────────────────────────────────────────────────
+    # Tight catch: only JSONDecodeError. If terraform show produced non-JSON output
+    # (e.g. plan binary wasn't generated), treat as an empty plan (no changes) so
+    # the guard still runs — it just sees zero resource_changes and trivially passes.
+    plan_json: dict = {}
+    if show_res.returncode == 0 and show_res.stdout.strip():
+        try:
+            plan_json = json.loads(show_res.stdout)
+        except json.JSONDecodeError as e:
+            print(f"   [plan_node] Could not parse plan JSON ({e}) — guard will run on empty plan")
+
+    # ── Step 3: Guard + cost (runs outside any broad except — fails closed) ────
+    # If run_all_guards() or any downstream call throws, the exception propagates.
+    # We do NOT catch it here. An unexpected exception in guard code means the guard
+    # could not verify safety — "couldn't verify" must never be reported as "passed."
+    resource_changes = plan_json.get("resource_changes", [])
+    create_count = sum(1 for rc in resource_changes if "create" in rc.get("change", {}).get("actions", []))
+    update_count = sum(1 for rc in resource_changes if "update" in rc.get("change", {}).get("actions", []))
+    delete_count = sum(1 for rc in resource_changes if "delete" in rc.get("change", {}).get("actions", []))
+
+    cost_estimate, cost_breakdown = _estimate_cost_infracost(workspace_path, plan_json)
+    cost_source = "infracost"
+    if cost_estimate is None:
+        cost_estimate, cost_breakdown = estimate_monthly_cost_breakdown(plan_json)
+        cost_source = "static-table"
+    print(f"   Cost estimate: ${cost_estimate}/mo (source: {cost_source}, {len(cost_breakdown)} items)")
+
+    guard = run_all_guards(plan_json, job_id, cost_estimate)
+    print(f"   Blast-radius guard: {guard['summary']}")
+
+    return {
+        "plan_json": plan_json,
+        "plan_summary": {"create": create_count, "update": update_count, "delete": delete_count, "resources": [rc["address"] for rc in resource_changes]},
+        "cost_estimate_monthly": cost_estimate,
+        "cost_breakdown": cost_breakdown,
+        "blast_radius_passed": guard["blast_radius_passed"],
+        "cost_ceiling_passed": guard["cost_ceiling_passed"],
+    }
 
 def apply_node(state: AgentState):
     print("--- 🚀 APPLY NODE ---")
