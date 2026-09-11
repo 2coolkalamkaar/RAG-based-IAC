@@ -171,8 +171,8 @@ def save_job(
     init_db()
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    # If no workspace_path provided, create one
-    if workspace_path is None:
+    # If no workspace_path provided, or it doesn't exist, create one
+    if not workspace_path or not os.path.exists(workspace_path):
         workspace_path = create_workspace(job_id)
         # Write files into workspace immediately
         for fname, content in files.items():

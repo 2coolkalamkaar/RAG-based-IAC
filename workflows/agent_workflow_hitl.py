@@ -382,6 +382,8 @@ def _get_aws_subprocess_env() -> dict:
     creds = assume_role()
     env = os.environ.copy()
     env.update({k: v for k, v in creds.items() if not k.startswith("_")})
+    env.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+    env.setdefault("AWS_REGION", "us-east-1")
     return env
 
 
@@ -893,6 +895,7 @@ def plan_node(state: AgentState):
             "cost_breakdown": cost_breakdown,
             "blast_radius_passed": guard["blast_radius_passed"],
             "cost_ceiling_passed": guard["cost_ceiling_passed"],
+            "workspace_path": workspace_path,
         }
 
     # ── Check if real AWS credentials are configured before attempting live plan ──
@@ -932,55 +935,70 @@ def plan_node(state: AgentState):
             "cost_breakdown": cost_breakdown,
             "blast_radius_passed": guard["blast_radius_passed"],
             "cost_ceiling_passed": guard["cost_ceiling_passed"],
+            "workspace_path": workspace_path,
         }
 
+    # ── Step 1: Run terraform subprocess calls ────────────────────────────────
+    # Narrow catch: only OS/subprocess-level failures (binary not found, permission
+    # error, process crash). These mean we literally could not run the plan tool —
+    # not that the code is dangerous. Fail open with a clear warning so the human
+    # reviewer can still inspect the generated code and decide.
     try:
         env = _get_aws_subprocess_env()
-
-        # Run init just in case
         subprocess.run(["terraform", "init", "-backend=false"], cwd=workspace_path, env=env, capture_output=True)
-        # Run plan and output to tfplan
         subprocess.run(["terraform", "plan", "-out=tfplan", "-detailed-exitcode"], cwd=workspace_path, env=env, capture_output=True, text=True)
-
-        # Parse plan
         show_res = subprocess.run(["terraform", "show", "-json", "tfplan"], cwd=workspace_path, env=env, capture_output=True, text=True)
-        plan_json = json.loads(show_res.stdout) if show_res.returncode == 0 else {}
-
-        resource_changes = plan_json.get("resource_changes", [])
-        create_count = sum(1 for rc in resource_changes if "create" in rc.get("change", {}).get("actions", []))
-        update_count = sum(1 for rc in resource_changes if "update" in rc.get("change", {}).get("actions", []))
-        delete_count = sum(1 for rc in resource_changes if "delete" in rc.get("change", {}).get("actions", []))
-
-        cost_estimate, cost_breakdown = _estimate_cost_infracost(workspace_path, plan_json)
-        cost_source = "infracost"
-        if cost_estimate is None:
-            cost_estimate, cost_breakdown = estimate_monthly_cost_breakdown(plan_json)
-            cost_source = "static-table"
-        print(f"   Cost estimate: ${cost_estimate}/mo (source: {cost_source}, {len(cost_breakdown)} items)")
-
-        guard = run_all_guards(plan_json, job_id, cost_estimate)
-        print(f"   Blast-radius guard: {guard['summary']}")
-
-        return {
-            "plan_json": plan_json,
-            "plan_summary": {"create": create_count, "update": update_count, "delete": delete_count, "resources": [rc["address"] for rc in resource_changes]},
-            "cost_estimate_monthly": cost_estimate,
-            "cost_breakdown": cost_breakdown,
-            "blast_radius_passed": guard["blast_radius_passed"],
-            "cost_ceiling_passed": guard["cost_ceiling_passed"],
-        }
-    except Exception as e:
-        # An exception here means we couldn't run terraform plan (e.g. network error,
-        # binary not found) — NOT that the generated code is dangerous.
-        # Default guards to True so the user can still review and decide.
-        print(f"   [plan_node] Plan execution error (non-fatal): {e}")
+    except (OSError, FileNotFoundError, subprocess.SubprocessError) as e:
+        # Infrastructure failure — couldn't invoke terraform at all.
+        # Return fail-open so the human can still review the generated code.
+        print(f"   [plan_node] terraform subprocess failed (tool unavailable): {e}")
         return {
             "plan_summary": {"create": 0, "update": 0, "delete": 0, "resources": []},
             "cost_estimate_monthly": 0.0,
             "cost_breakdown": [],
-            "blast_radius_passed": True,   # plan error ≠ security violation
+            "blast_radius_passed": True,   # subprocess failure ≠ security violation
             "cost_ceiling_passed": True,
         }
+
+    # ── Step 2: Parse plan JSON ────────────────────────────────────────────────
+    # Tight catch: only JSONDecodeError. If terraform show produced non-JSON output
+    # (e.g. plan binary wasn't generated), treat as an empty plan (no changes) so
+    # the guard still runs — it just sees zero resource_changes and trivially passes.
+    plan_json: dict = {}
+    if show_res.returncode == 0 and show_res.stdout.strip():
+        try:
+            plan_json = json.loads(show_res.stdout)
+        except json.JSONDecodeError as e:
+            print(f"   [plan_node] Could not parse plan JSON ({e}) — guard will run on empty plan")
+
+    # ── Step 3: Guard + cost (runs outside any broad except — fails closed) ────
+    # If run_all_guards() or any downstream call throws, the exception propagates.
+    # We do NOT catch it here. An unexpected exception in guard code means the guard
+    # could not verify safety — "couldn't verify" must never be reported as "passed."
+    resource_changes = plan_json.get("resource_changes", [])
+    create_count = sum(1 for rc in resource_changes if "create" in rc.get("change", {}).get("actions", []))
+    update_count = sum(1 for rc in resource_changes if "update" in rc.get("change", {}).get("actions", []))
+    delete_count = sum(1 for rc in resource_changes if "delete" in rc.get("change", {}).get("actions", []))
+
+    cost_estimate, cost_breakdown = _estimate_cost_infracost(workspace_path, plan_json)
+    cost_source = "infracost"
+    if cost_estimate is None:
+        cost_estimate, cost_breakdown = estimate_monthly_cost_breakdown(plan_json)
+        cost_source = "static-table"
+    print(f"   Cost estimate: ${cost_estimate}/mo (source: {cost_source}, {len(cost_breakdown)} items)")
+
+    guard = run_all_guards(plan_json, job_id, cost_estimate)
+    print(f"   Blast-radius guard: {guard['summary']}")
+
+    return {
+        "plan_json": plan_json,
+        "plan_summary": {"create": create_count, "update": update_count, "delete": delete_count, "resources": [rc["address"] for rc in resource_changes]},
+        "cost_estimate_monthly": cost_estimate,
+        "cost_breakdown": cost_breakdown,
+        "blast_radius_passed": guard["blast_radius_passed"],
+        "cost_ceiling_passed": guard["cost_ceiling_passed"],
+        "workspace_path": workspace_path,
+    }
 
 def apply_node(state: AgentState):
     print("--- 🚀 APPLY NODE ---")
@@ -989,28 +1007,76 @@ def apply_node(state: AgentState):
         return {"apply_status": "applied", "apply_outputs": {"mock_bucket_arn": "arn:aws:s3:::mock-bucket-123"}}
 
     workspace_path = state.get("workspace_path", "")
-    if not workspace_path:
-        return {"apply_status": "failed"}
+    files = state.get("terraform_code", {})
+
+    # If workspace_path is missing or doesn't exist on disk, recreate it from state
+    if not workspace_path or not os.path.exists(workspace_path):
+        workspace_path = tempfile.mkdtemp(prefix="terraforge_apply_")
+        print(f"   [apply_node] Workspace reconstructed at: {workspace_path}")
+
+    # Ensure all current terraform code is written into workspace
+    if files:
+        for fname, fcontent in files.items():
+            with open(os.path.join(workspace_path, fname), "w") as f:
+                f.write(fcontent)
 
     try:
         env = _get_aws_subprocess_env()
+
+        # Run init to guarantee plugins/providers are installed
+        init_res = subprocess.run(
+            ["terraform", "init", "-backend=false"],
+            cwd=workspace_path, env=env, capture_output=True, text=True,
+            timeout=120,
+        )
+        if init_res.returncode != 0:
+            err_msg = init_res.stderr or init_res.stdout
+            print(f"   [apply_node] ❌ terraform init failed:\n{err_msg}")
+            return {
+                "apply_status": "failed",
+                "apply_outputs": {"error": err_msg},
+                "workspace_path": workspace_path,
+            }
+
+        # Apply using pre-computed tfplan if present, otherwise direct auto-approve
+        tfplan_path = os.path.join(workspace_path, "tfplan")
+        apply_cmd = ["terraform", "apply", "-auto-approve"]
+        if os.path.exists(tfplan_path):
+            apply_cmd.append("tfplan")
+
+        print(f"   [apply_node] Running: {' '.join(apply_cmd)}")
         res = subprocess.run(
-            ["terraform", "apply", "-auto-approve", "tfplan"],
+            apply_cmd,
             cwd=workspace_path, env=env, capture_output=True, text=True,
             timeout=APPLY_TIMEOUT_SECONDS,
         )
         status = "applied" if res.returncode == 0 else "failed"
 
+        if status == "applied":
+            print("   [apply_node] ✅ Terraform Apply SUCCEEDED!")
+        else:
+            print(f"   [apply_node] ❌ Terraform Apply FAILED (code {res.returncode}):")
+            if res.stdout:
+                print(f"   [apply_node] stdout:\n{res.stdout}")
+            if res.stderr:
+                print(f"   [apply_node] stderr:\n{res.stderr}")
+
         out_res = subprocess.run(["terraform", "output", "-json"], cwd=workspace_path, env=env, capture_output=True, text=True)
         outputs = json.loads(out_res.stdout) if out_res.returncode == 0 and out_res.stdout.strip() else {}
+        if status == "failed":
+            outputs["error"] = res.stderr or res.stdout
 
-        return {"apply_status": status, "apply_outputs": outputs}
+        return {
+            "apply_status": status,
+            "apply_outputs": outputs,
+            "workspace_path": workspace_path,
+        }
     except subprocess.TimeoutExpired:
-        print(f"Apply error: exceeded {APPLY_TIMEOUT_SECONDS}s timeout — killed")
-        return {"apply_status": "failed"}
+        print(f"   [apply_node] ❌ Apply error: exceeded {APPLY_TIMEOUT_SECONDS}s timeout — killed")
+        return {"apply_status": "failed", "apply_outputs": {"error": "Timeout expired"}, "workspace_path": workspace_path}
     except Exception as e:
-        print(f"Apply error: {e}")
-        return {"apply_status": "failed"}
+        print(f"   [apply_node] ❌ Apply error: {e}")
+        return {"apply_status": "failed", "apply_outputs": {"error": str(e)}, "workspace_path": workspace_path}
 
 def destroy_node(state: AgentState):
     print("--- 💥 DESTROY NODE ---")
@@ -1019,24 +1085,41 @@ def destroy_node(state: AgentState):
         return {"apply_status": "destroyed"}
 
     workspace_path = state.get("workspace_path", "")
-    if not workspace_path:
-        return {"apply_status": "failed"}
+    files = state.get("terraform_code", {})
+
+    if not workspace_path or not os.path.exists(workspace_path):
+        workspace_path = tempfile.mkdtemp(prefix="terraforge_destroy_")
+        print(f"   [destroy_node] Workspace reconstructed at: {workspace_path}")
+
+    if files:
+        for fname, fcontent in files.items():
+            with open(os.path.join(workspace_path, fname), "w") as f:
+                f.write(fcontent)
 
     try:
         env = _get_aws_subprocess_env()
+        subprocess.run(
+            ["terraform", "init", "-backend=false"],
+            cwd=workspace_path, env=env, capture_output=True, text=True,
+            timeout=120,
+        )
         res = subprocess.run(
             ["terraform", "destroy", "-auto-approve"],
             cwd=workspace_path, env=env, capture_output=True, text=True,
             timeout=APPLY_TIMEOUT_SECONDS,
         )
         status = "destroyed" if res.returncode == 0 else "failed"
-        return {"apply_status": status}
+        if status != "destroyed":
+            print(f"   [destroy_node] ❌ Destroy failed (code {res.returncode}):\n{res.stderr or res.stdout}")
+        else:
+            print("   [destroy_node] ✅ Terraform Destroy SUCCEEDED!")
+        return {"apply_status": status, "workspace_path": workspace_path}
     except subprocess.TimeoutExpired:
-        print(f"Destroy error: exceeded {APPLY_TIMEOUT_SECONDS}s timeout — killed")
-        return {"apply_status": "failed"}
+        print(f"   [destroy_node] Destroy error: exceeded {APPLY_TIMEOUT_SECONDS}s timeout — killed")
+        return {"apply_status": "failed", "workspace_path": workspace_path}
     except Exception as e:
-        print(f"Destroy error: {e}")
-        return {"apply_status": "failed"}
+        print(f"   [destroy_node] Destroy error: {e}")
+        return {"apply_status": "failed", "workspace_path": workspace_path}
 
 # ─────────────────────────────────────────────────
 # 6. Routing Logic

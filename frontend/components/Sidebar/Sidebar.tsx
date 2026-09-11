@@ -1,4 +1,5 @@
 "use client";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Zap, History, Settings, Database, Shield, LayoutDashboard } from "lucide-react";
@@ -20,8 +21,85 @@ interface Props {
   onWorkflowChange?: (id: string) => void;
 }
 
-export function Sidebar({ chunkCount, awsConnected = false, applyPaused = false, onTogglePause, selectedWorkflow, onWorkflowChange }: Props) {
+export function Sidebar({
+  chunkCount: propChunkCount,
+  awsConnected: propAwsConnected,
+  applyPaused: propApplyPaused,
+  onTogglePause,
+  selectedWorkflow,
+  onWorkflowChange,
+}: Props) {
   const path = usePathname();
+  const [awsConnected, setAwsConnected] = useState<boolean>(propAwsConnected ?? false);
+  const [chunkCount, setChunkCount] = useState<number | undefined>(propChunkCount);
+  const [applyPaused, setApplyPaused] = useState<boolean>(propApplyPaused ?? false);
+
+  useEffect(() => {
+    if (propAwsConnected !== undefined) setAwsConnected(propAwsConnected);
+  }, [propAwsConnected]);
+
+  useEffect(() => {
+    if (propChunkCount !== undefined) setChunkCount(propChunkCount);
+  }, [propChunkCount]);
+
+  useEffect(() => {
+    if (propApplyPaused !== undefined) setApplyPaused(propApplyPaused);
+  }, [propApplyPaused]);
+
+  useEffect(() => {
+    const fetchStatus = () => {
+      fetch("/api/settings/credentials")
+        .then((r) => r.json())
+        .then((d) => {
+          if (d && typeof d.configured === "boolean") {
+            setAwsConnected(d.configured);
+          }
+        })
+        .catch(() => {});
+
+      if (propChunkCount === undefined) {
+        fetch("/api/health")
+          .then((r) => r.json())
+          .then((d) => {
+            if (d && typeof d.chunk_count === "number" && d.chunk_count >= 0) {
+              setChunkCount(d.chunk_count);
+            }
+          })
+          .catch(() => {});
+      }
+
+      if (propApplyPaused === undefined) {
+        fetch("/api/admin/status")
+          .then((r) => r.json())
+          .then((d) => {
+            if (d && typeof d.apply_paused === "boolean") {
+              setApplyPaused(d.apply_paused);
+            }
+          })
+          .catch(() => {});
+      }
+    };
+
+    fetchStatus();
+
+    window.addEventListener("aws-status-changed", fetchStatus);
+    return () => window.removeEventListener("aws-status-changed", fetchStatus);
+  }, [propChunkCount, propApplyPaused]);
+
+  const handleTogglePause = async () => {
+    if (onTogglePause) {
+      onTogglePause();
+      return;
+    }
+    const next = !applyPaused;
+    try {
+      const res = await fetch(`/api/admin/pause?pause=${next}`, { method: "POST" });
+      const data = await res.json();
+      if (data && typeof data.apply_paused === "boolean") {
+        setApplyPaused(data.apply_paused);
+      }
+    } catch {}
+  };
 
   return (
     <aside className={styles.sidebar}>
@@ -78,11 +156,9 @@ export function Sidebar({ chunkCount, awsConnected = false, applyPaused = false,
           <span className={styles.statusLabel} style={{ color: applyPaused ? "var(--red)" : "var(--text-muted)" }}>
             {applyPaused ? "Apply Paused" : "Apply Enabled"}
           </span>
-          {onTogglePause && (
-            <button className={styles.pauseToggle} onClick={onTogglePause} title="Toggle circuit breaker">
-              {applyPaused ? "Resume" : "Pause"}
-            </button>
-          )}
+          <button className={styles.pauseToggle} onClick={handleTogglePause} title="Toggle circuit breaker">
+            {applyPaused ? "Resume" : "Pause"}
+          </button>
         </div>
       </div>
 
