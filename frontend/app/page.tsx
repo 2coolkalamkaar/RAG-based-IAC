@@ -114,9 +114,13 @@ export default function DashboardPage() {
   const [sreFiles, setSreFiles] = useState<Record<string, string>>({});
   const sreInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [awsConnected, setAwsConnected] = useState(false);
 
   useEffect(() => {
-    getHealth().then((h) => setChunkCount(h.chunk_count)).catch(() => {});
+    getHealth().then((h) => {
+      setChunkCount(h.chunk_count);
+      if (h.aws_connected !== undefined) setAwsConnected(h.aws_connected);
+    }).catch(() => {});
   }, []);
 
   const addLog = useCallback((msg: string, level: LogEntry["level"] = "info") => {
@@ -270,6 +274,7 @@ export default function DashboardPage() {
     <div className="app-layout">
       <Sidebar
         chunkCount={chunkCount}
+        awsConnected={awsConnected}
         selectedWorkflow={workflow}
         onWorkflowChange={handleWorkflowChange}
       />

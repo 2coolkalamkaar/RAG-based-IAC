@@ -40,6 +40,7 @@ export interface InternalDoc {
 export interface HealthResponse {
   status: string;
   chunk_count: number;
+  aws_connected?: boolean;
   timestamp: string;
 }
 

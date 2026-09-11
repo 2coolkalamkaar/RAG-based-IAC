@@ -99,6 +99,11 @@ def on_startup():
 @app.get("/api/health")
 def health():
     try:
+        from aws.credentials_manager import get_role_arn
+        aws_configured = bool(get_role_arn()) or os.getenv("MOCK_AWS") == "true"
+    except Exception:
+        aws_configured = False
+    try:
         embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         vs = Chroma(persist_directory=DB_PATH, embedding_function=embeddings,
                     collection_metadata={"hnsw:space": "cosine"})
@@ -108,6 +113,7 @@ def health():
     return {
         "status": "ok",
         "chunk_count": chunk_count,
+        "aws_connected": aws_configured,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

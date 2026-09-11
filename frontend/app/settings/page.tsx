@@ -13,6 +13,7 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [msg, setMsg] = useState({ text: "", type: "" });
   const [testResult, setTestResult] = useState<{success: boolean, message: string} | null>(null);
+  const [awsConnected, setAwsConnected] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings/credentials")
@@ -20,6 +21,7 @@ export default function SettingsPage() {
       .then((d) => {
         setRoleArn(d.role_arn || d.role_arn_masked || "");
         setExtId(d.external_id || "");
+        if (d.configured) setAwsConnected(true);
       })
       .catch(() => {});
   }, []);
@@ -33,8 +35,13 @@ export default function SettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ role_arn: roleArn, external_id: extId }),
       });
-      if (res.ok) setMsg({ text: "Credentials saved.", type: "ok" });
-      else setMsg({ text: "Failed to save.", type: "err" });
+      if (res.ok) {
+        setMsg({ text: "Credentials saved.", type: "ok" });
+        setAwsConnected(true);
+        window.dispatchEvent(new CustomEvent("aws-status-changed"));
+      } else {
+        setMsg({ text: "Failed to save.", type: "err" });
+      }
     } catch {
       setMsg({ text: "Network error.", type: "err" });
     } finally {
@@ -53,6 +60,8 @@ export default function SettingsPage() {
           success: true,
           message: `Account: ${data.account} · ${data.arn}`,
         });
+        setAwsConnected(true);
+        window.dispatchEvent(new CustomEvent("aws-status-changed"));
       } else {
         setTestResult({ success: false, message: data.detail || "AssumeRole failed — check trust policy and External ID." });
       }
@@ -65,7 +74,7 @@ export default function SettingsPage() {
 
   return (
     <div className="app-layout">
-      <Sidebar selectedWorkflow="settings" onWorkflowChange={() => {}} />
+      <Sidebar selectedWorkflow="settings" awsConnected={awsConnected} onWorkflowChange={() => {}} />
 
       <main className={`main-content ${styles.main}`}>
         <div className={styles.header}>
