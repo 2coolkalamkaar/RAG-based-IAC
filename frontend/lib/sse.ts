@@ -33,7 +33,13 @@ export function useSSEStream({ onEvent, onDone }: UseSSEStreamOptions) {
   const abortRef = useRef<AbortController | null>(null);
 
   const start = useCallback(
-    async (workflow: string, prompt: string, threadId?: string) => {
+    async (
+      workflow: string,
+      prompt: string,
+      threadId?: string,
+      uploadMode?: boolean,
+      terraformCode?: Record<string, string>,
+    ) => {
       // Cancel any existing stream
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -43,7 +49,11 @@ export function useSSEStream({ onEvent, onDone }: UseSSEStreamOptions) {
         const res = await fetch(`${API_BASE}/api/run`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workflow, prompt, thread_id: threadId }),
+          body: JSON.stringify({
+            workflow, prompt, thread_id: threadId,
+            upload_mode: uploadMode ?? false,
+            terraform_code: terraformCode ?? null,
+          }),
           signal: controller.signal,
         });
 

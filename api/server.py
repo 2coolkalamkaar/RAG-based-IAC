@@ -123,6 +123,8 @@ class RunRequest(BaseModel):
     workflow: str       # "basic" | "rag" | "advanced" | "secure" | "hitl"
     prompt: str
     thread_id: str | None = None
+    upload_mode: bool = False       # True = SRE Upload Mode, skip Retriever+Architect
+    terraform_code: dict[str, str] | None = None  # filename -> HCL content, required if upload_mode
 
 
 def _sse(event: str, data: dict) -> str:
@@ -136,7 +138,10 @@ class StreamingQueueCallbackHandler(BaseCallbackHandler):
     def on_llm_new_token(self, token: str, **kwargs) -> None:
         self.q.put({"type": "token", "content": token})
 
-async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncGenerator[str, None]:
+async def _stream_workflow(
+    workflow: str, prompt: str, thread_id: str,
+    upload_mode: bool = False, terraform_code: dict[str, str] | None = None,
+) -> AsyncGenerator[str, None]:
     module_path = WORKFLOW_MODULES.get(workflow)
     if not module_path:
         yield _sse("error", {"message": f"Unknown workflow: {workflow}"})
@@ -158,7 +163,7 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
     initial_state = {
         "user_request": prompt,
         "messages": [],
-        "terraform_code": {},
+        "terraform_code": terraform_code if upload_mode and terraform_code else {},
         "validation_errors": "",
         "is_valid": False,
         "retry_count": 0,
@@ -187,7 +192,7 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
         # HitL fields
         "hitl_action":  "",
         "patch_request": "",
-        "upload_mode":   False,
+        "upload_mode":   upload_mode,
         "resource_integrity_passed": True,
         "docs_retrieved": 0,
     }
@@ -206,14 +211,28 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
     thread = threading.Thread(target=run_graph)
     thread.start()
 
+    # How often to send an SSE keep-alive comment while waiting for the next
+    # real event. A single slow node (e.g. `terraform init` downloading a
+    # provider, or a slow LLM call with no streaming tokens) can otherwise
+    # produce a long gap with zero bytes on the wire — long enough for an
+    # intermediate proxy's idle timeout (observed: Next.js's dev `rewrites()`
+    # proxy kills an idle SSE connection at ~30s) to kill the connection even
+    # though the backend is still working. A ping well under that threshold
+    # keeps the connection alive regardless of how long any one node takes.
+    HEARTBEAT_INTERVAL_S = 10
+
     try:
         while True:
-            item = await asyncio.to_thread(q.get)
+            try:
+                item = await asyncio.to_thread(q.get, True, HEARTBEAT_INTERVAL_S)
+            except queue.Empty:
+                yield ": heartbeat\n\n"  # SSE comment line — ignored by EventSource/fetch parsers
+                continue
             if item["type"] == "done":
                 break
             elif item["type"] == "error":
                 yield _sse("error", {"message": item["error"]})
-                break
+                return  # don't fall through to the unconditional "complete" event below
             elif item["type"] == "token":
                 yield _sse("code_stream", {"chunk": item["content"]})
             elif item["type"] == "node_update":
@@ -353,9 +372,11 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
 
 @app.post("/api/run")
 async def run_workflow(req: RunRequest):
+    if req.upload_mode and not req.terraform_code:
+        raise HTTPException(status_code=400, detail="upload_mode requires non-empty terraform_code")
     thread_id = req.thread_id or str(uuid.uuid4())
     return StreamingResponse(
-        _stream_workflow(req.workflow, req.prompt, thread_id),
+        _stream_workflow(req.workflow, req.prompt, thread_id, req.upload_mode, req.terraform_code),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

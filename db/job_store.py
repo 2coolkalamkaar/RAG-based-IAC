@@ -8,6 +8,7 @@ Schema v3 additions:
   - trust_factors   TEXT   — JSON of {factor: weight_value} for trust breakdown
 """
 import json
+import os
 import sqlite3
 import uuid
 import shutil

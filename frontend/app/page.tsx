@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, type ChangeEvent } from "react";
 import { Sidebar } from "@/components/Sidebar/Sidebar";
 import { PipelineVisualizer, Stage } from "@/components/PipelineVisualizer/PipelineVisualizer";
 import { TrustScoreCard, TrustData } from "@/components/TrustScoreCard/TrustScoreCard";
@@ -209,20 +209,44 @@ export default function DashboardPage() {
     setStages((prev) => prev.map((s) => ({ ...s, status: "idle" })));
   }
 
+  function handleSreFileSelect(e: ChangeEvent<HTMLInputElement>) {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    Array.from(fileList).forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setSreFiles((prev) => ({ ...prev, [file.name]: String(reader.result ?? "") }));
+      };
+      reader.readAsText(file);
+    });
+    e.target.value = ""; // allow re-selecting the same file(s) later
+  }
+
+  function removeSreFile(name: string) {
+    setSreFiles((prev) => {
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
+  }
+
   async function handleSubmit() {
     if (running) return;
     if (sreMode) {
       // SRE mode: validate uploaded files
       if (Object.keys(sreFiles).length === 0) { addLog("[SRE] No files uploaded yet.", "warn"); return; }
+      const filesToValidate = sreFiles; // capture before reset() clears state
+      const fileNames = Object.keys(filesToValidate);
+      const displayPrompt = `[SRE Upload] ${fileNames.length} file(s): ${fileNames.join(", ")}`;
       const tid = crypto.randomUUID();
       setThreadId(tid);
-      setActivePrompt("[SRE Upload]");
+      setActivePrompt(displayPrompt);
       reset();
       setSreFiles({});
       setRunning(true);
-      addLog(`[SRE Mode] Starting validation pipeline with ${Object.keys(sreFiles).length} file(s)…`, "info");
-      // Submit as hitl with upload_mode
-      await start("hitl", "__sre_upload__", tid);
+      addLog(`[SRE Mode] Starting validation pipeline with ${fileNames.length} file(s)…`, "info");
+      // Submit as hitl with upload_mode — skips Retriever/Architect, goes straight to Validator
+      await start("hitl", displayPrompt, tid, true, filesToValidate);
       return;
     }
     if (!prompt.trim()) return;
@@ -333,7 +357,7 @@ export default function DashboardPage() {
           {/* SRE Mode toggle */}
           <button
             className={`btn btn-ghost btn-sm ${sreMode ? styles.sreModeActive : ""}`}
-            onClick={() => { setSreMode(!sreMode); reset(); }}
+            onClick={() => { setSreMode(!sreMode); setSreFiles({}); reset(); }}
             title="SRE Mode: upload existing Terraform files for validation"
             style={{ marginLeft: "0.5rem", color: sreMode ? "var(--yellow)" : "var(--text-dim)",
               border: sreMode ? "1px solid rgba(245,158,11,0.4)" : undefined }}
@@ -341,6 +365,14 @@ export default function DashboardPage() {
             <Upload size={13} />
             {sreMode ? "SRE Mode ON" : "SRE Mode"}
           </button>
+          <input
+            ref={sreInputRef}
+            type="file"
+            accept=".tf"
+            multiple
+            style={{ display: "none" }}
+            onChange={handleSreFileSelect}
+          />
         </header>
 
         {/* Hero — only shown when nothing is started */}
@@ -456,33 +488,66 @@ export default function DashboardPage() {
         {/* ── Input area ── */}
         <div className={styles.inputZone}>
           <div className={styles.inputCard}>
-            <textarea
-              ref={textareaRef}
-              className={styles.textarea}
-              placeholder="Describe the AWS infrastructure you want to build… e.g. 'Deploy a highly-available 3-tier web app with RDS'"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
-              }}
-              rows={1}
-              disabled={running || hitlPaused}
-            />
+            {sreMode ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", width: "100%" }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => sreInputRef.current?.click()}
+                  disabled={running}
+                  style={{ alignSelf: "flex-start" }}
+                >
+                  <Upload size={13} /> Choose .tf file(s)…
+                </button>
+                {Object.keys(sreFiles).length > 0 && (
+                  <div className={styles.citationsList}>
+                    {Object.keys(sreFiles).map((name) => (
+                      <span key={name} className="badge badge-blue" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                        {name}
+                        <span
+                          onClick={() => removeSreFile(name)}
+                          style={{ cursor: "pointer", opacity: 0.7 }}
+                          title="Remove"
+                        >
+                          ✕
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <textarea
+                ref={textareaRef}
+                className={styles.textarea}
+                placeholder="Describe the AWS infrastructure you want to build… e.g. 'Deploy a highly-available 3-tier web app with RDS'"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
+                }}
+                rows={1}
+                disabled={running || hitlPaused}
+              />
+            )}
             <div className={styles.inputFooter}>
               <button
                 className={`btn btn-primary ${styles.sendBtn}`}
                 onClick={handleSubmit}
-                disabled={running || hitlPaused || (!prompt.trim() && !sreMode)}
+                disabled={running || hitlPaused || (!prompt.trim() && !sreMode) || (sreMode && Object.keys(sreFiles).length === 0)}
               >
                 {running ? (
                   <><span className="spinner" style={{ width: 13, height: 13 }} /> Running…</>
+                ) : sreMode ? (
+                  <><Send size={13} /> Validate {Object.keys(sreFiles).length || ""} File(s)</>
                 ) : (
                   <><Send size={13} /> Generate</>
                 )}
               </button>
             </div>
           </div>
-          <div className={styles.inputHintRow}>⏎ Generate · ⇧⏎ New line</div>
+          <div className={styles.inputHintRow}>
+            {sreMode ? "SRE Mode: uploaded files skip generation and go straight to validation" : "⏎ Generate · ⇧⏎ New line"}
+          </div>
         </div>
       </main>
     </div>
