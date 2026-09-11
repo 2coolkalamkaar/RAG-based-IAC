@@ -18,7 +18,7 @@ export default function SettingsPage() {
     fetch("/api/settings/credentials")
       .then((r) => r.json())
       .then((d) => {
-        setRoleArn(d.role_arn || "");
+        setRoleArn(d.role_arn || d.role_arn_masked || "");
         setExtId(d.external_id || "");
       })
       .catch(() => {});
@@ -48,7 +48,14 @@ export default function SettingsPage() {
     try {
       const res = await fetch("/api/settings/credentials/test", { method: "POST" });
       const data = await res.json();
-      setTestResult({ success: data.status === "ok", message: data.message });
+      if (data.ok) {
+        setTestResult({
+          success: true,
+          message: `Account: ${data.account} · ${data.arn}`,
+        });
+      } else {
+        setTestResult({ success: false, message: data.detail || "AssumeRole failed — check trust policy and External ID." });
+      }
     } catch {
       setTestResult({ success: false, message: "Network error during test." });
     } finally {

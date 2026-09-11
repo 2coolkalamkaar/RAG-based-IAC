@@ -481,6 +481,7 @@ def admin_pause(pause: bool = True):
 # ── Settings: AWS Credentials ─────────────────────────────────────────────────
 class CredentialsRequest(BaseModel):
     role_arn: str
+    external_id: str | None = None
 
 
 @app.get("/api/settings/credentials")
@@ -491,10 +492,12 @@ def get_credentials():
 
 @app.post("/api/settings/credentials")
 def save_credentials(req: CredentialsRequest):
-    from aws.credentials_manager import validate_role_arn, save_role_arn
+    from aws.credentials_manager import validate_role_arn, save_role_arn, save_external_id
     if not validate_role_arn(req.role_arn):
         raise HTTPException(status_code=400, detail="Invalid Role ARN format.")
     save_role_arn(req.role_arn)
+    if req.external_id:
+        save_external_id(req.external_id)
     return {"status": "saved", "role_arn": req.role_arn}
 
 

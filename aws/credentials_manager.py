@@ -67,6 +67,12 @@ def save_role_arn(role_arn: str):
     os.environ["AWS_ROLE_ARN"] = role_arn.strip()
 
 
+def save_external_id(external_id: str):
+    """Persist the External ID in .env."""
+    set_key(str(_ENV_FILE), "AWS_EXTERNAL_ID", external_id.strip())
+    os.environ["AWS_EXTERNAL_ID"] = external_id.strip()
+
+
 def get_role_arn() -> str | None:
     """Return the configured Role ARN, or None if not set."""
     return os.getenv("AWS_ROLE_ARN") or None
@@ -78,6 +84,7 @@ def get_credentials_status() -> dict:
     external_id = get_or_create_external_id()
     return {
         "configured": bool(role_arn),
+        "role_arn": role_arn,
         "role_arn_masked": _mask_arn(role_arn) if role_arn else None,
         "external_id": external_id,   # not a secret — safe to display
     }
