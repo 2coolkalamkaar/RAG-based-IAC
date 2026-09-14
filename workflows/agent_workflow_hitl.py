@@ -151,22 +151,37 @@ def _check_s3_acl_ownership_conflict(files: dict) -> str | None:
     resource cannot coexist with aws_s3_bucket_ownership_controls set to
     "BucketOwnerEnforced" — AWS rejects the ACL with AccessControlListNotSupported
     partway through apply, after the bucket itself has already been created.
+
+    This also fires when aws_s3_bucket_acl is present with NO ownership-controls
+    resource at all: since April 2023 AWS defaults every new bucket to
+    BucketOwnerEnforced, so an ACL resource with nothing overriding that default
+    fails the exact same way.
     """
     all_code = "\n".join(files.values())
     has_acl = re.search(r'resource\s+"aws_s3_bucket_acl"', all_code)
+    has_ownership_controls = re.search(
+        r'resource\s+"aws_s3_bucket_ownership_controls"', all_code
+    )
     has_enforced_ownership = re.search(
         r'object_ownership\s*=\s*"BucketOwnerEnforced"', all_code
     )
-    if has_acl and has_enforced_ownership:
+    if has_acl and (has_enforced_ownership or not has_ownership_controls):
         return (
             "Conflicting S3 configuration: an aws_s3_bucket_acl resource is present "
-            "alongside an aws_s3_bucket_ownership_controls resource set to "
-            'object_ownership = "BucketOwnerEnforced". AWS rejects ACL operations on '
+            + (
+                'alongside an aws_s3_bucket_ownership_controls resource set to '
+                'object_ownership = "BucketOwnerEnforced"'
+                if has_enforced_ownership
+                else "with no aws_s3_bucket_ownership_controls resource to override it "
+                     "(AWS defaults every new bucket to BucketOwnerEnforced since April 2023)"
+            )
+            + ". AWS rejects ACL operations on "
             "buckets with BucketOwnerEnforced ownership (AccessControlListNotSupported) "
             "and this failure happens mid-apply, after the bucket has already been "
             "created, leaving an orphaned resource. Remove the aws_s3_bucket_acl "
             "resource — access should be managed via IAM policy and "
-            'aws_s3_bucket_public_access_block instead — or change object_ownership to '
+            'aws_s3_bucket_public_access_block instead — or add/change an '
+            'aws_s3_bucket_ownership_controls resource with object_ownership = '
             '"BucketOwnerPreferred" if an ACL is truly required.'
         )
     return None
