@@ -99,7 +99,8 @@ export default function DashboardPage() {
   const [resourceCitations, setResourceCitations] = useState<Record<string, string[]>>({});
   const [hitlPaused, setHitlPaused] = useState(false);
   const [hitlLoading, setHitlLoading] = useState(false);
-  const [threadId, setThreadId] = useState(() => crypto.randomUUID());
+  const [threadId, setThreadId] = useState<string>("");
+  useEffect(() => { setThreadId(crypto.randomUUID()); }, []);
   const [activePrompt, setActivePrompt] = useState("");
   const [costEstimate, setCostEstimate]   = useState<number>(0);
   const [costBreakdown, setCostBreakdown] = useState<CostBreakdownItem[]>([]);

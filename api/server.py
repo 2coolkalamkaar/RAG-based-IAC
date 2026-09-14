@@ -12,6 +12,7 @@ import uuid
 import asyncio
 import importlib
 import queue
+import time
 import threading
 from datetime import datetime, timezone
 from typing import AsyncGenerator
@@ -199,16 +200,22 @@ async def _stream_workflow(
 
     final_state = initial_state.copy()
 
+    # Signal the background thread to stop early (e.g. on timeout or client disconnect).
+    # run_graph checks this between LangGraph events and exits cleanly.
+    stop_event = threading.Event()
+
     def run_graph():
         try:
             stream_gen = agent_app.stream(initial_state, config=config)
             for event in stream_gen:
+                if stop_event.is_set():
+                    break
                 q.put({"type": "node_update", "event": event})
             q.put({"type": "done"})
         except Exception as e:
             q.put({"type": "error", "error": str(e)})
 
-    thread = threading.Thread(target=run_graph)
+    thread = threading.Thread(target=run_graph, daemon=True)
     thread.start()
 
     # How often to send an SSE keep-alive comment while waiting for the next
@@ -221,8 +228,25 @@ async def _stream_workflow(
     # keeps the connection alive regardless of how long any one node takes.
     HEARTBEAT_INTERVAL_S = 10
 
+    # Maximum wall-clock time for the entire stream before we forcibly stop it.
+    # HITL streams legitimately wait for human input (hours), so they get a
+    # much longer deadline. All other workflows should complete in minutes.
+    MAX_STREAM_DURATION_S = 4 * 3600 if workflow == "hitl" else 10 * 60
+
+    _stream_started_at = time.monotonic()
+
     try:
         while True:
+            # Enforce the total stream deadline.
+            elapsed = time.monotonic() - _stream_started_at
+            if elapsed >= MAX_STREAM_DURATION_S:
+                stop_event.set()
+                yield _sse("error", {
+                    "message": f"Workflow timed out after {int(elapsed)}s. "
+                               "The pipeline was stopped. Please try again."
+                })
+                return
+
             try:
                 item = await asyncio.to_thread(q.get, True, HEARTBEAT_INTERVAL_S)
             except queue.Empty:
@@ -368,12 +392,19 @@ async def _stream_workflow(
 
     except Exception as e:
         yield _sse("error", {"message": str(e)})
+    finally:
+        # Always signal the background thread to stop when the generator exits
+        # (normal completion, timeout, error, or client disconnect). This
+        # prevents the thread from running indefinitely if the client drops.
+        stop_event.set()
 
 
 @app.post("/api/run")
 async def run_workflow(req: RunRequest):
     if req.upload_mode and not req.terraform_code:
         raise HTTPException(status_code=400, detail="upload_mode requires non-empty terraform_code")
+    if not req.upload_mode and not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt cannot be empty")
     thread_id = req.thread_id or str(uuid.uuid4())
     return StreamingResponse(
         _stream_workflow(req.workflow, req.prompt, thread_id, req.upload_mode, req.terraform_code),
