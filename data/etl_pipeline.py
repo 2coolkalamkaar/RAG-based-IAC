@@ -34,8 +34,12 @@ load_dotenv()
 # ─────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────
-DOCS_PATH      = Path("/home/rahul/RAG-based-IAC/terraform-provider-aws/website/docs/r")
-PROVIDER_REPO  = Path("/home/rahul/RAG-based-IAC/terraform-provider-aws")
+# PROVIDER_REPO defaults to a local clone at the project root (already gitignored
+# for this purpose) rather than a hardcoded personal path, so the ETL can run on
+# any machine. Override with TF_PROVIDER_REPO_PATH if you keep the clone elsewhere.
+PROVIDER_REPO_URL = "https://github.com/hashicorp/terraform-provider-aws.git"
+PROVIDER_REPO  = Path(os.getenv("TF_PROVIDER_REPO_PATH", str(Path(__file__).parent.parent / "terraform-provider-aws")))
+DOCS_PATH      = PROVIDER_REPO / "website" / "docs" / "r"
 DB_PATH        = Path("./chroma_db_terraform")
 MANIFEST_PATH  = DB_PATH / "etl_manifest.json"
 DOCS_GLOB      = "**/*.html.markdown"
@@ -81,11 +85,25 @@ def get_provider_version() -> str:
         return "unknown"
 
 
+def clone_provider_repo():
+    """Shallow-clone the terraform-provider-aws repo if it isn't present locally yet."""
+    print(f"\n📥 Provider repo not found at {PROVIDER_REPO} — cloning (shallow)...")
+    subprocess.run(
+        ["git", "clone", "--depth", "1", PROVIDER_REPO_URL, str(PROVIDER_REPO)],
+        capture_output=True, text=True, check=True,
+    )
+    print(f"   ✅ Cloned into {PROVIDER_REPO}")
+
+
 def pull_latest_docs() -> bool:
     """
     Pull latest changes from the terraform-provider-aws repo.
     Returns True if anything changed.
     """
+    if not PROVIDER_REPO.exists():
+        clone_provider_repo()
+        return True
+
     print(f"\n🔄 Pulling latest docs from provider repo...")
     before = get_provider_version()
     try:

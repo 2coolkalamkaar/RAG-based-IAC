@@ -281,6 +281,17 @@ def load_job(job_id: str) -> dict | None:
     return result
 
 
+def get_job_id_by_thread_id(thread_id: str) -> str | None:
+    """Return the job UUID for a given LangGraph thread_id, or None."""
+    init_db()
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM jobs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+    return row["id"] if row else None
+
+
 def delete_job(job_id: str) -> bool:
     """Delete a job by ID. Returns True if a row was deleted."""
     with _get_conn() as conn:

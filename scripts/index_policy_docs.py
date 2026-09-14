@@ -1,14 +1,15 @@
 """
 scripts/index_policy_docs.py
 ============================
-Indexes the policy docs in knowledge_base/policy_docs/ into a separate
-ChromaDB collection named "policy_docs", distinct from the AWS provider-docs
-collection "terraform_docs".
+Indexes the policy docs in knowledge_base/policy_docs/ into the SAME ChromaDB
+collection the Retriever Node actually queries (the LangChain default collection
+in chroma_db_terraform/ — the same one data/etl_pipeline.py and
+data/custom_doc_injector.py write into). Chunks are tagged with
+metadata.collection="policy_docs" so re-runs can safely clear and re-index just
+these chunks without touching AWS-provider-doc or SRE-uploaded chunks.
 
 Run once (or re-run when policy docs change):
     PYTHONPATH=. venv/bin/python3 scripts/index_policy_docs.py
-
-The Retriever Node queries BOTH collections and merges results.
 """
 import os
 import sys
@@ -23,7 +24,7 @@ load_dotenv()
 
 POLICY_DOCS_DIR = PROJECT_ROOT / "knowledge_base" / "policy_docs"
 CHROMA_DB_PATH  = os.getenv("DB_PATH", str(PROJECT_ROOT / "chroma_db_terraform"))
-COLLECTION_NAME = "policy_docs"
+COLLECTION_TAG  = "policy_docs"  # metadata tag, not a separate Chroma collection
 CHUNK_SIZE      = 800
 CHUNK_OVERLAP   = 100
 
@@ -50,13 +51,14 @@ def main():
     vector_store = Chroma(
         persist_directory=CHROMA_DB_PATH,
         embedding_function=embeddings,
-        collection_name=COLLECTION_NAME,
         collection_metadata={"hnsw:space": "cosine"},
     )
 
-    # Clear existing policy_docs collection to allow re-indexing
+    # Clear only previously-indexed policy chunks (by metadata tag) so re-running
+    # this script doesn't touch AWS-provider-doc or SRE-uploaded chunks that share
+    # the same collection.
     try:
-        existing = vector_store._collection.get(include=[])
+        existing = vector_store._collection.get(where={"collection": COLLECTION_TAG}, include=[])
         if existing["ids"]:
             vector_store._collection.delete(ids=existing["ids"])
             print(f"Cleared {len(existing['ids'])} existing policy chunks.")
@@ -77,7 +79,7 @@ def main():
             {
                 "source": str(md_file.relative_to(PROJECT_ROOT)),
                 "filename": md_file.name,
-                "collection": COLLECTION_NAME,
+                "collection": COLLECTION_TAG,
             }
             for _ in chunks
         ]
@@ -85,7 +87,7 @@ def main():
         total_chunks += len(chunks)
         print(f"  Indexed {md_file.name}: {len(chunks)} chunks")
 
-    print(f"\nDone. {total_chunks} policy chunks indexed into '{COLLECTION_NAME}' collection.")
+    print(f"\nDone. {total_chunks} policy chunks indexed (tagged '{COLLECTION_TAG}').")
     print(f"Collection total: {vector_store._collection.count()} chunks")
 
 

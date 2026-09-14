@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from db.job_store import (
     init_db, save_job, load_all_jobs, load_job, delete_job,
     is_apply_paused, set_apply_paused, update_plan_summary, update_apply_status,
+    get_job_id_by_thread_id,
 )
 from data.custom_doc_injector import inject_document, list_internal_docs
 from langchain_chroma import Chroma
@@ -434,11 +435,22 @@ def _run_hitl_invoke(run_id: str, req: HitLAction, mod, config: dict):
     """Run agent_app.invoke in a background thread and store the result."""
     try:
         agent_app = mod.app
-        agent_app.invoke(
-            Command(resume={"hitl_action": req.action, "patch_request": req.patch_request}),
-            config=config,
-        )
-        final_state = agent_app.get_state(config).values
+        current_state = agent_app.get_state(config)
+
+        # A thread that already reached END (e.g. destroy requested from History
+        # after apply already completed) has no pending interrupt left to resume —
+        # Command(resume=...) has nothing to wake up and hangs forever. Call
+        # destroy_node directly against the persisted checkpoint state instead.
+        if req.action == "destroy" and not current_state.next:
+            destroy_result = mod.destroy_node(current_state.values)
+            agent_app.update_state(config, destroy_result)
+            final_state = {**current_state.values, **destroy_result}
+        else:
+            agent_app.invoke(
+                Command(resume={"hitl_action": req.action, "patch_request": req.patch_request}),
+                config=config,
+            )
+            final_state = agent_app.get_state(config).values
 
         job_id = None
         if req.action in ("approve", "apply"):
@@ -463,6 +475,12 @@ def _run_hitl_invoke(run_id: str, req: HitLAction, mod, config: dict):
                 apply_status = final_state.get("apply_status", "")
                 if apply_status:
                     update_apply_status(job_id, apply_status, final_state.get("apply_outputs"))
+
+        if req.action == "destroy":
+            apply_status = final_state.get("apply_status", "")
+            existing_job_id = get_job_id_by_thread_id(req.thread_id)
+            if existing_job_id and apply_status:
+                update_apply_status(existing_job_id, apply_status, final_state.get("apply_outputs"))
 
         _apply_runs[run_id] = {
             "status": "done",

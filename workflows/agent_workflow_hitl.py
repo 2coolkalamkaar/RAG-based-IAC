@@ -18,6 +18,17 @@ load_dotenv()
 
 os.environ["LANGCHAIN_PROJECT"] = "Workflow_with_gemini_2.5_HitL_RAG"
 
+# Every terraform init (validate, plan, apply, destroy — each often in its own
+# throwaway workspace) re-downloads the full provider binary (~675MB for
+# hashicorp/aws) unless a shared plugin cache is configured. With retries this
+# can mean multiple redundant downloads per run. Point all `terraform` calls at
+# one persistent cache dir so the provider is fetched once and reused.
+_TF_PLUGIN_CACHE_DIR = os.getenv(
+    "TF_PLUGIN_CACHE_DIR", str(Path.home() / ".terraform.d" / "plugin-cache")
+)
+Path(_TF_PLUGIN_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+os.environ["TF_PLUGIN_CACHE_DIR"] = _TF_PLUGIN_CACHE_DIR
+
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
 from langchain_google_vertexai import ChatVertexAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -133,6 +144,34 @@ def build_resource_citations(files: dict, citation_details: list[dict]) -> dict[
     return mapping
 
 
+def _check_s3_acl_ownership_conflict(files: dict) -> str | None:
+    """
+    Detect a S3 ACL / ownership-controls conflict that `terraform validate` cannot
+    catch (it's a live AWS API constraint, not a syntax error): an aws_s3_bucket_acl
+    resource cannot coexist with aws_s3_bucket_ownership_controls set to
+    "BucketOwnerEnforced" — AWS rejects the ACL with AccessControlListNotSupported
+    partway through apply, after the bucket itself has already been created.
+    """
+    all_code = "\n".join(files.values())
+    has_acl = re.search(r'resource\s+"aws_s3_bucket_acl"', all_code)
+    has_enforced_ownership = re.search(
+        r'object_ownership\s*=\s*"BucketOwnerEnforced"', all_code
+    )
+    if has_acl and has_enforced_ownership:
+        return (
+            "Conflicting S3 configuration: an aws_s3_bucket_acl resource is present "
+            "alongside an aws_s3_bucket_ownership_controls resource set to "
+            'object_ownership = "BucketOwnerEnforced". AWS rejects ACL operations on '
+            "buckets with BucketOwnerEnforced ownership (AccessControlListNotSupported) "
+            "and this failure happens mid-apply, after the bucket has already been "
+            "created, leaving an orphaned resource. Remove the aws_s3_bucket_acl "
+            "resource — access should be managed via IAM policy and "
+            'aws_s3_bucket_public_access_block instead — or change object_ownership to '
+            '"BucketOwnerPreferred" if an ACL is truly required.'
+        )
+    return None
+
+
 def validate_terraform_code(
     files: dict,
     workspace_path: str | None = None,
@@ -145,6 +184,10 @@ def validate_terraform_code(
     """
     if not files:
         return False, "No Terraform files found to validate."
+
+    conflict_error = _check_s3_acl_ownership_conflict(files)
+    if conflict_error:
+        return False, conflict_error
 
     using_temp = workspace_path is None
     work_dir = workspace_path if workspace_path else tempfile.mkdtemp()
@@ -197,7 +240,7 @@ def validate_terraform_code(
 # ─────────────────────────────────────────────────
 _VERTEX_CONFIG = dict(
     model_name="gemini-2.5-pro",
-    project="project-036ddc82-f451-4fae-9e3",
+    project="sre-agent-project-505914",
     location="us-central1",
 )
 llm    = ChatVertexAI(**_VERTEX_CONFIG, temperature=0.2, streaming=True)  # Architect / Fixer
