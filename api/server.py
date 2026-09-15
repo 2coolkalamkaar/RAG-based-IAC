@@ -12,6 +12,7 @@ import uuid
 import asyncio
 import importlib
 import queue
+import time
 import threading
 from datetime import datetime, timezone
 from typing import AsyncGenerator
@@ -25,6 +26,7 @@ from pydantic import BaseModel
 from db.job_store import (
     init_db, save_job, load_all_jobs, load_job, delete_job,
     is_apply_paused, set_apply_paused, update_plan_summary, update_apply_status,
+    get_job_id_by_thread_id,
 )
 from data.custom_doc_injector import inject_document, list_internal_docs
 from langchain_chroma import Chroma
@@ -98,18 +100,36 @@ def on_startup():
 # ── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
+    import os as _os
     try:
         from aws.credentials_manager import get_role_arn
-        aws_configured = bool(get_role_arn()) or os.getenv("MOCK_AWS") == "true"
+        aws_configured = bool(get_role_arn()) or _os.getenv("MOCK_AWS") == "true"
     except Exception:
         aws_configured = False
+
+    # Reuse the vector store singleton loaded during warm-start instead of
+    # re-instantiating HuggingFaceEmbeddings + Chroma on every health poll.
+    # Re-instantiating races with the warm-start thread (both try to load the
+    # sentence-transformers model at the same time) and returns -1.
+    chunk_count = -1
     try:
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        vs = Chroma(persist_directory=DB_PATH, embedding_function=embeddings,
-                    collection_metadata={"hnsw:space": "cosine"})
-        chunk_count = vs._collection.count()
-    except Exception as e:
-        chunk_count = -1
+        import workflows.agent_workflow_hitl as _hitl
+        _vs = _hitl._vector_store  # already-loaded singleton, or None if still warming up
+        if _vs is not None:
+            chunk_count = _vs._collection.count()
+        else:
+            # Still warming up — report 0 so the UI shows something sensible
+            chunk_count = 0
+    except Exception as _e:
+        # Fallback: try a direct count if the singleton approach fails
+        try:
+            embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+            vs = Chroma(persist_directory=DB_PATH, embedding_function=embeddings,
+                        collection_metadata={"hnsw:space": "cosine"})
+            chunk_count = vs._collection.count()
+        except Exception:
+            chunk_count = -1
+
     return {
         "status": "ok",
         "chunk_count": chunk_count,
@@ -123,6 +143,8 @@ class RunRequest(BaseModel):
     workflow: str       # "basic" | "rag" | "advanced" | "secure" | "hitl"
     prompt: str
     thread_id: str | None = None
+    upload_mode: bool = False       # True = SRE Upload Mode, skip Retriever+Architect
+    terraform_code: dict[str, str] | None = None  # filename -> HCL content, required if upload_mode
 
 
 def _sse(event: str, data: dict) -> str:
@@ -136,7 +158,10 @@ class StreamingQueueCallbackHandler(BaseCallbackHandler):
     def on_llm_new_token(self, token: str, **kwargs) -> None:
         self.q.put({"type": "token", "content": token})
 
-async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncGenerator[str, None]:
+async def _stream_workflow(
+    workflow: str, prompt: str, thread_id: str,
+    upload_mode: bool = False, terraform_code: dict[str, str] | None = None,
+) -> AsyncGenerator[str, None]:
     module_path = WORKFLOW_MODULES.get(workflow)
     if not module_path:
         yield _sse("error", {"message": f"Unknown workflow: {workflow}"})
@@ -158,7 +183,7 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
     initial_state = {
         "user_request": prompt,
         "messages": [],
-        "terraform_code": {},
+        "terraform_code": terraform_code if upload_mode and terraform_code else {},
         "validation_errors": "",
         "is_valid": False,
         "retry_count": 0,
@@ -187,33 +212,70 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
         # HitL fields
         "hitl_action":  "",
         "patch_request": "",
-        "upload_mode":   False,
+        "upload_mode":   upload_mode,
         "resource_integrity_passed": True,
         "docs_retrieved": 0,
     }
 
     final_state = initial_state.copy()
 
+    # Signal the background thread to stop early (e.g. on timeout or client disconnect).
+    # run_graph checks this between LangGraph events and exits cleanly.
+    stop_event = threading.Event()
+
     def run_graph():
         try:
             stream_gen = agent_app.stream(initial_state, config=config)
             for event in stream_gen:
+                if stop_event.is_set():
+                    break
                 q.put({"type": "node_update", "event": event})
             q.put({"type": "done"})
         except Exception as e:
             q.put({"type": "error", "error": str(e)})
 
-    thread = threading.Thread(target=run_graph)
+    thread = threading.Thread(target=run_graph, daemon=True)
     thread.start()
+
+    # How often to send an SSE keep-alive comment while waiting for the next
+    # real event. A single slow node (e.g. `terraform init` downloading a
+    # provider, or a slow LLM call with no streaming tokens) can otherwise
+    # produce a long gap with zero bytes on the wire — long enough for an
+    # intermediate proxy's idle timeout (observed: Next.js's dev `rewrites()`
+    # proxy kills an idle SSE connection at ~30s) to kill the connection even
+    # though the backend is still working. A ping well under that threshold
+    # keeps the connection alive regardless of how long any one node takes.
+    HEARTBEAT_INTERVAL_S = 10
+
+    # Maximum wall-clock time for the entire stream before we forcibly stop it.
+    # HITL streams legitimately wait for human input (hours), so they get a
+    # much longer deadline. All other workflows should complete in minutes.
+    MAX_STREAM_DURATION_S = 4 * 3600 if workflow == "hitl" else 10 * 60
+
+    _stream_started_at = time.monotonic()
 
     try:
         while True:
-            item = await asyncio.to_thread(q.get)
+            # Enforce the total stream deadline.
+            elapsed = time.monotonic() - _stream_started_at
+            if elapsed >= MAX_STREAM_DURATION_S:
+                stop_event.set()
+                yield _sse("error", {
+                    "message": f"Workflow timed out after {int(elapsed)}s. "
+                               "The pipeline was stopped. Please try again."
+                })
+                return
+
+            try:
+                item = await asyncio.to_thread(q.get, True, HEARTBEAT_INTERVAL_S)
+            except queue.Empty:
+                yield ": heartbeat\n\n"  # SSE comment line — ignored by EventSource/fetch parsers
+                continue
             if item["type"] == "done":
                 break
             elif item["type"] == "error":
                 yield _sse("error", {"message": item["error"]})
-                break
+                return  # don't fall through to the unconditional "complete" event below
             elif item["type"] == "token":
                 yield _sse("code_stream", {"chunk": item["content"]})
             elif item["type"] == "node_update":
@@ -349,13 +411,22 @@ async def _stream_workflow(workflow: str, prompt: str, thread_id: str) -> AsyncG
 
     except Exception as e:
         yield _sse("error", {"message": str(e)})
+    finally:
+        # Always signal the background thread to stop when the generator exits
+        # (normal completion, timeout, error, or client disconnect). This
+        # prevents the thread from running indefinitely if the client drops.
+        stop_event.set()
 
 
 @app.post("/api/run")
 async def run_workflow(req: RunRequest):
+    if req.upload_mode and not req.terraform_code:
+        raise HTTPException(status_code=400, detail="upload_mode requires non-empty terraform_code")
+    if not req.upload_mode and not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt cannot be empty")
     thread_id = req.thread_id or str(uuid.uuid4())
     return StreamingResponse(
-        _stream_workflow(req.workflow, req.prompt, thread_id),
+        _stream_workflow(req.workflow, req.prompt, thread_id, req.upload_mode, req.terraform_code),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -382,11 +453,22 @@ def _run_hitl_invoke(run_id: str, req: HitLAction, mod, config: dict):
     """Run agent_app.invoke in a background thread and store the result."""
     try:
         agent_app = mod.app
-        agent_app.invoke(
-            Command(resume={"hitl_action": req.action, "patch_request": req.patch_request}),
-            config=config,
-        )
-        final_state = agent_app.get_state(config).values
+        current_state = agent_app.get_state(config)
+
+        # A thread that already reached END (e.g. destroy requested from History
+        # after apply already completed) has no pending interrupt left to resume —
+        # Command(resume=...) has nothing to wake up and hangs forever. Call
+        # destroy_node directly against the persisted checkpoint state instead.
+        if req.action == "destroy" and not current_state.next:
+            destroy_result = mod.destroy_node(current_state.values)
+            agent_app.update_state(config, destroy_result)
+            final_state = {**current_state.values, **destroy_result}
+        else:
+            agent_app.invoke(
+                Command(resume={"hitl_action": req.action, "patch_request": req.patch_request}),
+                config=config,
+            )
+            final_state = agent_app.get_state(config).values
 
         job_id = None
         if req.action in ("approve", "apply"):
@@ -411,6 +493,12 @@ def _run_hitl_invoke(run_id: str, req: HitLAction, mod, config: dict):
                 apply_status = final_state.get("apply_status", "")
                 if apply_status:
                     update_apply_status(job_id, apply_status, final_state.get("apply_outputs"))
+
+        if req.action == "destroy":
+            apply_status = final_state.get("apply_status", "")
+            existing_job_id = get_job_id_by_thread_id(req.thread_id)
+            if existing_job_id and apply_status:
+                update_apply_status(existing_job_id, apply_status, final_state.get("apply_outputs"))
 
         _apply_runs[run_id] = {
             "status": "done",

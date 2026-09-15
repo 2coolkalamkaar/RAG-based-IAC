@@ -55,7 +55,7 @@ export default function HistoryPage() {
 
     setDestroying(true);
     try {
-      const res = await submitHitLAction(selected.id, selected.workflow, "destroy");
+      const res = await submitHitLAction(selected.thread_id, selected.workflow, "destroy");
       const status = (res as any)?.apply_status;
       setSelected({ ...selected, apply_status: status });
       setJobs(jobs.map(j => j.id === selected.id ? { ...j, apply_status: status } : j));

@@ -2,7 +2,14 @@
 
 import { useRef, useCallback } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+// The Next.js dev server's rewrite proxy buffers streamed (SSE) responses
+// instead of flushing them incrementally whenever the browser requests
+// compression (which it always does) — this silently breaks live progress
+// updates. Talk to the backend directly in dev to avoid the proxy entirely;
+// NEXT_PUBLIC_API_URL still overrides this for any environment.
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL ||
+  (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
 
 export interface CostBreakdownItem {
   name: string;
@@ -33,7 +40,13 @@ export function useSSEStream({ onEvent, onDone }: UseSSEStreamOptions) {
   const abortRef = useRef<AbortController | null>(null);
 
   const start = useCallback(
-    async (workflow: string, prompt: string, threadId?: string) => {
+    async (
+      workflow: string,
+      prompt: string,
+      threadId?: string,
+      uploadMode?: boolean,
+      terraformCode?: Record<string, string>,
+    ) => {
       // Cancel any existing stream
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -43,7 +56,11 @@ export function useSSEStream({ onEvent, onDone }: UseSSEStreamOptions) {
         const res = await fetch(`${API_BASE}/api/run`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workflow, prompt, thread_id: threadId }),
+          body: JSON.stringify({
+            workflow, prompt, thread_id: threadId,
+            upload_mode: uploadMode ?? false,
+            terraform_code: terraformCode ?? null,
+          }),
           signal: controller.signal,
         });
 

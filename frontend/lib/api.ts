@@ -1,6 +1,13 @@
 // API client — all calls to the FastAPI backend
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+// The Next.js dev server's rewrite proxy buffers streamed (SSE) responses
+// instead of flushing them incrementally whenever the browser requests
+// compression (which it always does) — this silently breaks live progress
+// updates. Talk to the backend directly in dev to avoid the proxy entirely;
+// NEXT_PUBLIC_API_URL still overrides this for any environment.
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL ||
+  (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
 
 export interface Job {
   id: string;
