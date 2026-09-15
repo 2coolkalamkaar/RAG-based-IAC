@@ -240,7 +240,7 @@ def validate_terraform_code(
 # ─────────────────────────────────────────────────
 _VERTEX_CONFIG = dict(
     model_name="gemini-2.5-pro",
-    project="sre-agent-project-505914",
+    project="project-036ddc82-f451-4fae-9e3",
     location="us-central1",
 )
 llm    = ChatVertexAI(**_VERTEX_CONFIG, temperature=0.2, streaming=True)  # Architect / Fixer

@@ -100,18 +100,36 @@ def on_startup():
 # ── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
+    import os as _os
     try:
         from aws.credentials_manager import get_role_arn
-        aws_configured = bool(get_role_arn()) or os.getenv("MOCK_AWS") == "true"
+        aws_configured = bool(get_role_arn()) or _os.getenv("MOCK_AWS") == "true"
     except Exception:
         aws_configured = False
+
+    # Reuse the vector store singleton loaded during warm-start instead of
+    # re-instantiating HuggingFaceEmbeddings + Chroma on every health poll.
+    # Re-instantiating races with the warm-start thread (both try to load the
+    # sentence-transformers model at the same time) and returns -1.
+    chunk_count = -1
     try:
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        vs = Chroma(persist_directory=DB_PATH, embedding_function=embeddings,
-                    collection_metadata={"hnsw:space": "cosine"})
-        chunk_count = vs._collection.count()
-    except Exception as e:
-        chunk_count = -1
+        import workflows.agent_workflow_hitl as _hitl
+        _vs = _hitl._vector_store  # already-loaded singleton, or None if still warming up
+        if _vs is not None:
+            chunk_count = _vs._collection.count()
+        else:
+            # Still warming up — report 0 so the UI shows something sensible
+            chunk_count = 0
+    except Exception as _e:
+        # Fallback: try a direct count if the singleton approach fails
+        try:
+            embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+            vs = Chroma(persist_directory=DB_PATH, embedding_function=embeddings,
+                        collection_metadata={"hnsw:space": "cosine"})
+            chunk_count = vs._collection.count()
+        except Exception:
+            chunk_count = -1
+
     return {
         "status": "ok",
         "chunk_count": chunk_count,
