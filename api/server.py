@@ -8,6 +8,7 @@ Run with:
     PYTHONPATH=. venv/bin/uvicorn api.server:app --reload --port 8000
 """
 import json
+import os
 import uuid
 import asyncio
 import importlib
@@ -42,9 +43,15 @@ app = FastAPI(
     version="2.0.0",
 )
 
+# Local dev origins always allowed; add the deployed frontend's origin(s) via
+# FRONTEND_ORIGINS (comma-separated), e.g. "https://your-app.vercel.app".
+_allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+_extra_origins = os.environ.get("FRONTEND_ORIGINS", "")
+_allowed_origins += [o.strip() for o in _extra_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

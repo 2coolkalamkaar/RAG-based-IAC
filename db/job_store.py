@@ -1,11 +1,17 @@
 """
-Job Store — SQLite persistence for approved Terraform runs.
+Job Store — persistence for approved Terraform runs.
 ============================================================
-Separate from LangGraph's state.db to avoid schema conflicts.
-Database path: jobs.db (project root)
+Uses Postgres (e.g. Supabase) when the DATABASE_URL env var is set — required
+in production, since Cloud Run has no durable local disk across instances and
+SQLite's WAL mode doesn't work reliably over networked storage anyway. Falls
+back to local SQLite (jobs.db, project root) when DATABASE_URL is unset, so
+local development is unchanged.
 
-Schema v3 additions:
-  - trust_factors   TEXT   — JSON of {factor: weight_value} for trust breakdown
+Separate from LangGraph's checkpoint store to avoid schema conflicts.
+
+Schema v4 additions:
+  - trust_factors      TEXT — JSON of {factor: weight_value} for trust breakdown
+  - resource_citations TEXT — JSON of {resource_type: [doc_source, ...]}
 """
 import json
 import os
@@ -15,26 +21,51 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+DATABASE_URL = os.environ.get("DATABASE_URL")  # Postgres/Supabase connection string
+USE_POSTGRES = bool(DATABASE_URL)
+
+if USE_POSTGRES:
+    import psycopg
+    from psycopg.rows import dict_row
+
 DB_PATH        = Path(__file__).parent.parent / "jobs.db"
 WORKSPACES_DIR = Path(__file__).parent.parent / "workspaces"
 
+_initialized = False  # guards against re-running schema checks on every call
+                       # over a network connection (matters for remote Postgres)
 
-def _get_conn() -> sqlite3.Connection:
+
+def _get_conn():
+    if USE_POSTGRES:
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
 
 
+def _q(sql: str) -> str:
+    """Translate SQLite-style `?` placeholders to Postgres `%s` when needed."""
+    return sql.replace("?", "%s") if USE_POSTGRES else sql
+
+
 # ── Schema migration helper ───────────────────────────────────────────────────
 
-def _add_column_if_missing(conn: sqlite3.Connection, col: str, col_type: str):
+def _add_column_if_missing(conn, col: str, col_type: str):
     """Idempotently add a column to the jobs table."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+    if USE_POSTGRES:
+        existing = {
+            row["column_name"] for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'jobs'"
+            ).fetchall()
+        }
+    else:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
     if col not in existing:
         conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
 
 
-def _add_control_table(conn: sqlite3.Connection):
+def _add_control_table(conn):
     """Single-row control table for global circuit breaker flag."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS control (
@@ -42,14 +73,23 @@ def _add_control_table(conn: sqlite3.Connection):
             value TEXT NOT NULL
         )
     """)
-    # Seed APPLY_PAUSED = false if not present
-    conn.execute("""
-        INSERT OR IGNORE INTO control (key, value) VALUES ('APPLY_PAUSED', 'false')
-    """)
+    if USE_POSTGRES:
+        conn.execute("""
+            INSERT INTO control (key, value) VALUES ('APPLY_PAUSED', 'false')
+            ON CONFLICT (key) DO NOTHING
+        """)
+    else:
+        conn.execute("""
+            INSERT OR IGNORE INTO control (key, value) VALUES ('APPLY_PAUSED', 'false')
+        """)
 
 
 def init_db():
-    """Create/migrate the jobs table. Called at server startup."""
+    """Create/migrate the jobs table. Called at server startup (and lazily by
+    reads/writes below, but only does real work once per process)."""
+    global _initialized
+    if _initialized:
+        return
     WORKSPACES_DIR.mkdir(exist_ok=True)
     with _get_conn() as conn:
         conn.execute("""
@@ -70,7 +110,7 @@ def init_db():
                 cost_estimate  REAL
             )
         """)
-        # v2 migrations — idempotent for existing DBs
+        # v2+ migrations — idempotent for existing DBs
         for col, col_type in [
             ("workspace_path", "TEXT"),
             ("apply_status",   "TEXT"),
@@ -84,6 +124,7 @@ def init_db():
 
         _add_control_table(conn)
         conn.commit()
+    _initialized = True
 
 
 # ── Workspace helpers ─────────────────────────────────────────────────────────
@@ -104,7 +145,7 @@ def get_workspace(job_id: str) -> str | None:
     init_db()
     with _get_conn() as conn:
         row = conn.execute(
-            "SELECT workspace_path FROM jobs WHERE id = ?", (job_id,)
+            _q("SELECT workspace_path FROM jobs WHERE id = ?"), (job_id,)
         ).fetchone()
     return row["workspace_path"] if row else None
 
@@ -125,7 +166,7 @@ def is_apply_paused() -> bool:
         row = conn.execute(
             "SELECT value FROM control WHERE key = 'APPLY_PAUSED'"
         ).fetchone()
-    return row and row["value"].lower() == "true"
+    return bool(row) and row["value"].lower() == "true"
 
 
 def set_apply_paused(paused: bool):
@@ -133,7 +174,7 @@ def set_apply_paused(paused: bool):
     init_db()
     with _get_conn() as conn:
         conn.execute(
-            "UPDATE control SET value = ? WHERE key = 'APPLY_PAUSED'",
+            _q("UPDATE control SET value = ? WHERE key = 'APPLY_PAUSED'"),
             ("true" if paused else "false",),
         )
         conn.commit()
@@ -156,7 +197,7 @@ def save_job(
     Persist an approved Terraform run.
 
     Args:
-        thread_id:      LangGraph thread_id (for cross-referencing state.db).
+        thread_id:      LangGraph thread_id (for cross-referencing the checkpoint store).
         prompt:         Original user request.
         workflow:       Workflow name e.g. 'hitl', 'advanced'.
         trust_score:    0.0-1.0 trust score (None if not applicable).
@@ -181,12 +222,12 @@ def save_job(
 
     with _get_conn() as conn:
         conn.execute(
-            """
+            _q("""
             INSERT INTO jobs
                 (id, thread_id, created_at, workflow, prompt, trust_score,
                  trust_label, trust_factors, files_json, workspace_path, resource_citations)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            """),
             (
                 job_id, thread_id, now, workflow, prompt,
                 trust_score, trust_label,
@@ -212,9 +253,10 @@ def update_apply_status(
         status:  One of: 'applied', 'failed', 'destroyed'
         outputs: Dict from `terraform output -json` (None on failure/destroy).
     """
+    init_db()
     with _get_conn() as conn:
         conn.execute(
-            "UPDATE jobs SET apply_status = ?, apply_outputs = ? WHERE id = ?",
+            _q("UPDATE jobs SET apply_status = ?, apply_outputs = ? WHERE id = ?"),
             (status, json.dumps(outputs) if outputs else None, job_id),
         )
         conn.commit()
@@ -226,9 +268,10 @@ def update_plan_summary(
     cost_estimate: float,
 ):
     """Store the plan summary and cost estimate on the job record."""
+    init_db()
     with _get_conn() as conn:
         conn.execute(
-            "UPDATE jobs SET plan_summary = ?, cost_estimate = ? WHERE id = ?",
+            _q("UPDATE jobs SET plan_summary = ?, cost_estimate = ? WHERE id = ?"),
             (json.dumps(plan_summary), cost_estimate, job_id),
         )
         conn.commit()
@@ -242,13 +285,13 @@ def load_all_jobs(limit: int = 50) -> list[dict]:
     init_db()
     with _get_conn() as conn:
         rows = conn.execute(
-            """
+            _q("""
             SELECT id, thread_id, created_at, workflow, prompt, trust_score,
                    trust_label, workspace_path, apply_status, cost_estimate
             FROM jobs
             ORDER BY created_at DESC
             LIMIT ?
-            """,
+            """),
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -261,7 +304,7 @@ def load_job(job_id: str) -> dict | None:
     """
     init_db()
     with _get_conn() as conn:
-        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        row = conn.execute(_q("SELECT * FROM jobs WHERE id = ?"), (job_id,)).fetchone()
     if not row:
         return None
     result = dict(row)
@@ -286,7 +329,7 @@ def get_job_id_by_thread_id(thread_id: str) -> str | None:
     init_db()
     with _get_conn() as conn:
         row = conn.execute(
-            "SELECT id FROM jobs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+            _q("SELECT id FROM jobs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1"),
             (thread_id,),
         ).fetchone()
     return row["id"] if row else None
@@ -294,7 +337,8 @@ def get_job_id_by_thread_id(thread_id: str) -> str | None:
 
 def delete_job(job_id: str) -> bool:
     """Delete a job by ID. Returns True if a row was deleted."""
+    init_db()
     with _get_conn() as conn:
-        cursor = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        cursor = conn.execute(_q("DELETE FROM jobs WHERE id = ?"), (job_id,))
         conn.commit()
     return cursor.rowcount > 0

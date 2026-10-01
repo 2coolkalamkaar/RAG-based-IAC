@@ -36,6 +36,12 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import interrupt
 
+# Postgres checkpointer is only needed when DATABASE_URL is set (production /
+# Cloud Run, where there's no durable local disk for a SQLite state.db).
+if os.environ.get("DATABASE_URL"):
+    import psycopg
+    from langgraph.checkpoint.postgres import PostgresSaver
+
 from aws.credentials_manager import assume_role
 from workflows.blast_radius_guard import run_all_guards, estimate_monthly_cost, estimate_monthly_cost_breakdown
 
@@ -255,8 +261,8 @@ def validate_terraform_code(
 # ─────────────────────────────────────────────────
 _VERTEX_CONFIG = dict(
     model_name="gemini-2.5-pro",
-    project="sre-agent-project-505914",
-    location="us-central1",
+    project=os.environ.get("GOOGLE_CLOUD_PROJECT", "sre-agent-project-505914"),
+    location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
 )
 llm    = ChatVertexAI(**_VERTEX_CONFIG, temperature=0.2, streaming=True)  # Architect / Fixer
 mq_llm = ChatVertexAI(**_VERTEX_CONFIG, temperature=0.0)                  # MultiQuery retrieval
@@ -1314,10 +1320,19 @@ workflow.add_edge("Destroy_Node", END)
 # ─────────────────────────────────────────────────
 # 7. Compile with Checkpointer
 # ─────────────────────────────────────────────────
-db_path = os.path.join(os.getcwd(), "state.db")
-conn = sqlite3.connect(db_path, check_same_thread=False)
-memory = SqliteSaver(conn)
-memory.setup()
+_database_url = os.environ.get("DATABASE_URL")
+if _database_url:
+    # Production: Postgres (e.g. Supabase). Cloud Run has no durable local disk
+    # across instances, so pipeline checkpoints must live in a real database.
+    pg_conn = psycopg.connect(_database_url, autocommit=True)
+    memory = PostgresSaver(pg_conn)
+    memory.setup()
+else:
+    # Local dev: unchanged SQLite checkpoint file.
+    db_path = os.path.join(os.getcwd(), "state.db")
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    memory = SqliteSaver(conn)
+    memory.setup()
 
 app = workflow.compile(checkpointer=memory, interrupt_before=["HitL_Node"])
 

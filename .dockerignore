@@ -1,8 +1,36 @@
-
+# Python / local env
+.venv/
 venv/
-.git/
 __pycache__/
 *.pyc
 .env
-flake8
-pytest_cache
+
+# Frontend (not part of the backend image; deployed separately to Vercel)
+frontend/node_modules/
+frontend/.next/
+
+# Large files not needed at runtime
+*.mp4
+*.pdf
+*.pptx
+Screen Recording*
+terraform-provider-aws/
+knowledge_base/
+workspaces/
+Terraform-Architect-FullStack/
+archive/
+
+# Git / CI
+.git/
+.github/
+
+# Local state (recreated at runtime / migrated to Supabase, not baked into image)
+jobs.db
+state.db
+state.db-shm
+state.db-wal
+
+# Misc
+.pytest_cache/
+.semgrepignore
+*.log
