@@ -14,6 +14,9 @@
 
 ---
 
+https://github.com/user-attachments/assets/a436ac77-887c-4872-8b93-a68c4925a0d8
+
+
 ## 📖 Overview
 
 This project is a **production-ready Hybrid RAG + Agentic AI system** that automates infrastructure code generation for DevOps and SRE engineers. A user describes what they need in plain English — the agent researches, architects, validates, secures, and self-corrects a complete Terraform solution.
